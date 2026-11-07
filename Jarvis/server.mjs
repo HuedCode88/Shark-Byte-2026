@@ -198,6 +198,19 @@ function getErrorMessage(result, status) {
   return `Swarms API returned ${status}.`
 }
 
+function prepareDelivery(output) {
+  const text = output
+    .replace(/^["']|["']$/g, '')
+    .replace(/^(Sure|Certainly|Of course)[,!]\s*/i, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  return {
+    text,
+    chunks: text.split(/(?<=[.!?])\s+/).filter(Boolean),
+  }
+}
+
 function isVisualRequest(transcript) {
   return /\b(show|display|visuali[sz]e|visual|chart|graph|plot|table|timeline|checklist|image|picture|window|panel|dashboard|login|form|interface|screen)\b/i.test(transcript)
 }
@@ -368,6 +381,34 @@ function classifyTurn(transcript) {
   return 'standard'
 }
 
+function readEmotion(transcript) {
+  const text = transcript.toLowerCase()
+  if (/\b(stressed|overwhelmed|worried|anxious|urgent|frustrated)\b/.test(text)) {
+    return 'User sounds stressed; keep the answer calm and brief.'
+  }
+  if (/\b(excited|awesome|great|love|happy)\b/.test(text)) {
+    return 'User sounds upbeat; stay warm without overdoing enthusiasm.'
+  }
+  if (/\bhow do i|what is|why does|can you explain|help me\b/.test(text)) {
+    return 'User is seeking information; be clear, practical, and concise.'
+  }
+  return 'Use a relaxed, direct tone.'
+}
+
+function retrieveMemories() {
+  return memories.slice(-5).map((memory) => memory.fact)
+}
+
+function remember(facts) {
+  for (const fact of facts) {
+    if (typeof fact !== 'string' || !fact.trim()) continue
+    if (!memories.some((memory) => memory.fact === fact.trim())) {
+      memories.push({ fact: fact.trim(), createdAt: Date.now() })
+    }
+  }
+  while (memories.length > maxMemoryEntries) memories.shift()
+}
+
 async function callSwarms(body, url = swarmsUrl) {
   const swarmsResponse = await fetch(url, {
     method: 'POST',
@@ -386,6 +427,94 @@ async function callSwarms(body, url = swarmsUrl) {
     throw new Error(`Swarms returned ${swarmsResponse.status}: ${getErrorMessage(result, swarmsResponse.status)}`)
   }
   return result
+}
+
+async function runMemoryKeeper(transcript, recalledMemories) {
+  if (!process.env.SWARMS_API_KEY) return
+  try {
+    const result = await callSwarms({
+      name: 'Jarvis Memory Keeper',
+      swarm_type: 'MixtureOfAgents',
+      task: `Extract durable facts, preferences, or running callbacks from this user turn.
+Return JSON only in this shape: {"facts":["..."]}. Return an empty array when there is nothing durable.
+Previous memories: ${recalledMemories.join('; ') || 'none'}
+User turn: ${transcript}`,
+      response_format: { type: 'json_object' },
+      agents: [{
+        agent_name: 'Memory Keeper',
+        model_name: configuredModel('MEMORY_MODEL', fallbackModels.memory),
+        system_prompt: 'Extract useful long-term user context only. Never invent facts and never answer the user.',
+      }],
+    })
+    const raw = getOutput(result).replace(/^```json\s*|\s*```$/g, '')
+    const parsed = JSON.parse(raw)
+    remember(Array.isArray(parsed.facts) ? parsed.facts : [])
+  } catch (error) {
+    console.error('Memory keeper failed:', error)
+  }
+}
+
+async function runChatJob(jobId, transcript, snapshot, conversation, emotion, recalledMemories) {
+  try {
+    if (!process.env.SWARMS_API_KEY) {
+      throw new Error('SWARMS_API_KEY is not configured on the server.')
+    }
+    const context = [
+      ...(Array.isArray(conversation) ? conversation : []),
+      { role: 'context', text: `Tone note: ${emotion}` },
+      { role: 'context', text: `Relevant memories: ${recalledMemories.join('; ') || 'none'}` },
+    ]
+    const result = classifyTurn(transcript) === 'direct'
+      ? await runConversationRequest(transcript, context, emotion, recalledMemories)
+      : await runUiRequest(transcript, snapshot, context)
+    jobs.set(jobId, { status: 'complete', ...result })
+    while (jobs.size > maxJobEntries) jobs.delete(jobs.keys().next().value)
+  } catch (error) {
+    console.error('Chat job failed:', error)
+    jobs.set(jobId, {
+      status: 'failed',
+      error: error instanceof Error ? error.message : 'The chat job failed.',
+    })
+  }
+}
+
+async function runConversationRequest(transcript, conversation, emotion, recalledMemories) {
+  const result = await callSwarms({
+    name: 'Jarvis Conversational Slow Layer',
+    swarm_type: 'MixtureOfAgents',
+    task: JSON.stringify({
+      transcript,
+      conversation,
+      toneNote: emotion,
+      memories: recalledMemories,
+      outputRules: 'Return only the final answer as plain text. Use one to three short, natural sentences. No headings, lists, JSON, or internal commentary.',
+    }),
+    agents: [
+      {
+        agent_name: 'Thinker',
+        model_name: configuredModel('THINKER_MODEL', fallbackModels.thinker),
+        system_prompt: 'Handle hard reasoning, planning, and research. Produce accurate findings for the final speaker.',
+      },
+      {
+        agent_name: 'Persona Guardian',
+        model_name: configuredModel('GUARDIAN_MODEL', fallbackModels.guardian),
+        system_prompt: 'Remove robotic habits, disclaimers, lists, over-apologizing, repeated phrasing, and excessive enthusiasm. Keep the answer casual and human.',
+      },
+      {
+        agent_name: 'Delivery Director',
+        model_name: configuredModel('DELIVERY_MODEL', fallbackModels.delivery),
+        system_prompt: 'Prepare concise text for spoken delivery. Use short streamable sentences and natural pauses without markup.',
+      },
+      {
+        agent_name: 'Initiator',
+        model_name: configuredModel('INITIATOR_MODEL', fallbackModels.initiator),
+        system_prompt: 'Add one subtle callback or relevant follow-up only when supported by the supplied memories. Do not force one.',
+      },
+    ],
+  })
+  const answer = prepareDelivery(getOutput(result))
+  if (!answer.text) throw new Error('Swarms returned no conversational answer.')
+  return { answer: answer.text, commands: [], speech: answer.text.slice(0, 500), chunks: answer.chunks }
 }
 
 async function runDirectRequest(transcript, conversation) {
@@ -409,6 +538,12 @@ async function runDirectRequest(transcript, conversation) {
 }
 
 const server = createServer(async (request, response) => {
+  if (request.method === 'GET' && request.url.startsWith('/api/chat/')) {
+    const job = jobs.get(request.url.slice('/api/chat/'.length))
+    sendJson(response, job ? 200 : 404, job || { error: 'Chat job not found.' })
+    return
+  }
+
   if (request.method === 'POST' && request.url === '/api/ui') {
     let body = ''
     for await (const chunk of request) body += chunk
@@ -428,11 +563,6 @@ const server = createServer(async (request, response) => {
     return
   }
 
-  if (request.method !== 'POST' || request.url !== '/api/chat') {
-    sendJson(response, 404, { error: 'Not found' })
-    return
-  }
-
   let body = ''
   for await (const chunk of request) body += chunk
 
@@ -442,8 +572,20 @@ const server = createServer(async (request, response) => {
       sendJson(response, 400, { error: 'Please provide a question.' })
       return
     }
-    const result = await runUiRequest(question.trim(), snapshot || {}, conversation)
-    sendJson(response, 200, { output: result.answer, ...result })
+    const transcript = question.trim()
+    const emotion = readEmotion(transcript)
+    const recalledMemories = retrieveMemories()
+    const jobId = randomUUID()
+    jobs.set(jobId, { status: 'thinking' })
+    sendJson(response, 202, {
+      jobId,
+      status: 'thinking',
+      layer: 'fast',
+      tone: emotion,
+      roles: fastAgents,
+    })
+    void runChatJob(jobId, transcript, snapshot || {}, conversation || [], emotion, recalledMemories)
+    void runMemoryKeeper(transcript, recalledMemories)
   } catch (error) {
     console.error('Swarms request failed:', error)
     sendJson(response, 500, { error: error instanceof Error ? error.message : 'The server could not process that question.' })
