@@ -1,6 +1,43 @@
 import { useState } from 'react'
 import './App.css'
 
+function MessageContent({ text }) {
+  const parts = text.split(/(```[\w+#.-]*\s*[\s\S]*?```)/g)
+  return parts.map((part, index) => {
+    const match = part.match(/^```([\w+#.-]*)\s*([\s\S]*?)```$/)
+    if (!match) return <span key={index}>{part}</span>
+    return <CodeBlock key={index} language={match[1]} code={match[2].trim()} />
+  })
+}
+
+function CodeBlock({ language, code }) {
+  const [copied, setCopied] = useState(false)
+
+  async function copyCode() {
+    try {
+      await navigator.clipboard.writeText(code)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1500)
+    } catch {
+      setCopied(false)
+    }
+  }
+
+  return (
+    <div className="code-panel">
+      <div className="code-toolbar">
+        <span>{language || 'code'}</span>
+        <button type="button" className="copy-button" onClick={copyCode}>
+          {copied ? 'Copied' : 'Copy'}
+        </button>
+      </div>
+      <pre className="code-block">
+        <code>{code}</code>
+      </pre>
+    </div>
+  )
+}
+
 function DocumentAttachment({ document }) {
   if (document.status === 'pending') {
     return <div className="document-card pending">Preparing your document preview...</div>
@@ -157,7 +194,9 @@ function App() {
           {messages.map((message, index) => (
             <div className={`message-row ${message.role}`} key={`${message.role}-${index}`}>
               <span className="message-label">{message.role === 'user' ? 'You' : 'Swarm'}</span>
-              <p>{message.text}</p>
+              <p className={message.role === 'assistant' ? 'assistant-content' : undefined}>
+                <MessageContent text={message.text} />
+              </p>
               {message.document && <DocumentAttachment document={message.document} />}
             </div>
           ))}

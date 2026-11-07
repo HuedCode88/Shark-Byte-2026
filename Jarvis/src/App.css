@@ -94,6 +94,14 @@ h2 { margin: 10px 0 8px; font: 500 clamp(30px, 5vw, 46px)/1.05 Georgia, serif; l
 .message-label { display: block; margin-bottom: 5px; color: var(--dark-mint); font: 700 11px/1.2 ui-monospace, monospace; text-transform: uppercase; letter-spacing: .1em; }
 .message-row p { margin: 0; padding: 13px 16px; border-radius: 14px; background: #edf3ee; text-align: left; font-size: 15px; white-space: pre-wrap; }
 .message-row.user p { background: var(--ink); color: #f5faef; }
+.assistant-content { overflow-x: auto; }
+.code-panel { display: flex; min-width: 0; flex-direction: column; margin: 12px 0 0; overflow: hidden; border: 1px solid #263d3a; border-radius: 8px; background: #132d2b; }
+.code-panel:first-child { margin-top: 0; }
+.code-toolbar { display: flex; align-items: center; justify-content: space-between; padding: 7px 10px; color: #b7cf9f; font: 11px/1 ui-monospace, SFMono-Regular, Consolas, monospace; text-transform: uppercase; }
+.copy-button { min-height: 0; padding: 5px 9px; border: 1px solid #55705e; border-radius: 5px; background: transparent; color: #e8f4dc; font: inherit; cursor: pointer; }
+.copy-button:hover:not(:disabled) { background: #244a46; }
+.code-block { max-width: 100%; margin: 0; padding: 14px; overflow: auto; color: #e8f4dc; font: 13px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre; tab-size: 4; }
+.code-block code { font: inherit; }
 .document-card { margin-top: 12px; padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: #fff; text-align: left; }
 .document-card.pending { color: var(--muted); font-size: 13px; }
 .document-error { color: #a53d42; font-size: 13px; }

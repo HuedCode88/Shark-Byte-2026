@@ -19,6 +19,7 @@ const swarmsUrl = 'https://api.swarms.world/v1/swarm/completions'
 const jobs = new Map()
 const memories = []
 let latestDocumentId = null
+let latestConversation = null
 const maxMemoryEntries = 20
 const maxJobEntries = 100
 const fallbackModels = {
@@ -30,6 +31,7 @@ const fallbackModels = {
   docWriter: 'gpt-4o',
   docStructure: 'gpt-4.1',
   orchestrator: 'gpt-4o-mini',
+  programmer: 'gpt-4o',
 }
 
 function configuredModel(name, fallback) {
@@ -119,11 +121,11 @@ function retrieveMemories() {
   return memories.slice(-5).map((memory) => memory.fact)
 }
 
-function prepareDelivery(output) {
+function prepareDelivery(output, preserveFormatting = false) {
   const text = output
     .replace(/^["']|["']$/g, '')
     .replace(/^(Sure|Certainly|Of course)[,!]\s*/i, '')
-    .replace(/\s+/g, ' ')
+    .replace(preserveFormatting ? /[ \t]+\n/g : /\s+/g, preserveFormatting ? '\n' : ' ')
     .trim()
   return {
     text,
@@ -144,6 +146,15 @@ function remember(facts) {
 function updateJob(jobId, patch) {
   jobs.set(jobId, { ...(jobs.get(jobId) || {}), ...patch })
   while (jobs.size > maxJobEntries) jobs.delete(jobs.keys().next().value)
+}
+
+function getLatestConversationContext() {
+  if (!latestConversation) return 'No previous assistant response is available.'
+  return `Previous user request:
+${latestConversation.question}
+
+Previous assistant response:
+${latestConversation.response.slice(0, 16000)}`
 }
 
 // ============================================================================
@@ -174,6 +185,10 @@ async function callSwarms(name, task, agents, swarmType = 'MixtureOfAgents') {
 }
 
 function fallbackInterpretation(question, hasDocument) {
+  const programmingRequest = isProgrammingRequest(question)
+  if (programmingRequest) {
+    return { intent: 'programming', task: question, format: null, needsClarification: false }
+  }
   const documentRequest = wantsDocument(question)
   const contextFollowUp = isDocumentContextFollowUp(question)
   const editRequest = hasDocument && (wantsDocumentEdit(question) || contextFollowUp)
@@ -187,6 +202,10 @@ function fallbackInterpretation(question, hasDocument) {
   }
 }
 
+function isProgrammingRequest(question) {
+  return /\b(code|coding|program|programming|developer|debug|debugging|function|class|algorithm|binary tree|api|javascript|typescript|python|java|c\+\+|c#|go|rust|ruby|php|kotlin|swift|react|vue|css|html|sql|regex)\b/i.test(question)
+}
+
 function parseOrchestratorPlan(rawOutput, question) {
   const cleaned = rawOutput.replace(/^```(?:json)?\s*|\s*```$/gi, '').trim()
   const start = cleaned.indexOf('{')
@@ -197,7 +216,7 @@ function parseOrchestratorPlan(rawOutput, question) {
   if (!plan || typeof plan !== 'object' || Array.isArray(plan)) {
     throw new Error('Conversation orchestrator returned an invalid plan.')
   }
-  const validIntents = new Set(['answer', 'create_document', 'edit_document', 'clarify'])
+  const validIntents = new Set(['answer', 'programming', 'create_document', 'edit_document', 'clarify'])
   const formatAliases = {
     none: null,
     null: null,
@@ -234,19 +253,24 @@ async function interpretConversation(question, recalledMemories) {
 The user expects an autonomous assistant: infer reasonable details instead of asking unnecessary questions.
 Use the existing document when the message is a follow-up such as "make it longer", "make it three pages", "translate it into French", "change the ending", or "just do it".
 Return JSON only:
-{"intent":"answer|create_document|edit_document|clarify","task":"a precise instruction for the next specialist","format":"txt|html|md|pdf|docx|null","needsClarification":false}
+{"intent":"answer|programming|create_document|edit_document|clarify","task":"a precise instruction for the next specialist","format":"txt|html|md|pdf|docx|null","needsClarification":false}
 Existing document available: ${hasDocument ? 'yes' : 'no'}
+Previous conversation context:
+${getLatestConversationContext()}
 Relevant memories: ${recalledMemories.join('; ') || 'none'}
 User message:
 <<<${question}>>>`,
       [{
         agent_name: 'ConversationOrchestrator',
         system_prompt:
-          'Classify intent conservatively but supportively. Any request to write, draft, compose, create, or provide written work is a document request. Any follow-up that changes, expands, translates, or reformats an existing document is an edit request. Do not answer the user or refuse the task. Preserve the user’s goal in task. Use null format when unspecified.',
+          'Classify intent conservatively but supportively. Resolve references such as "this", "that", and "it" against the previous conversation context. If the user asks to translate, convert, rewrite, or modify previous code, route it to programming and include the source task in the specialist instruction. Route programming questions to programming. Any request to write, draft, compose, create, or provide written work is a document request. Any follow-up that changes, expands, translates, or reformats an existing document is an edit request. Do not answer the user or refuse the task. Preserve the user’s goal in task. Use null format when unspecified.',
         model_name: configuredModel('ORCHESTRATOR_MODEL', fallbackModels.orchestrator),
       }],
     )
     const plan = parseOrchestratorPlan(getOutput(result), question)
+    if (isProgrammingRequest(question) && !wantsDocument(question)) {
+      return { ...plan, intent: 'programming', task: question, needsClarification: false }
+    }
     const explicitNewDocument = wantsDocument(question) && !isDocumentContextFollowUp(question)
     if (explicitNewDocument) {
       return { ...plan, intent: 'create_document', task: question, needsClarification: false }
@@ -312,12 +336,23 @@ async function runThinker(jobId, question, emotion, recalledMemories, interpreta
     const documentNote = wantsDocument(question) || (latestDocumentId && wantsDocumentEdit(question))
       ? '\nA written work or file is being prepared on screen. Do not refuse the writing request, brainstorm instead of completing it, or repeat its contents aloud. Mention only that the downloadable document is being prepared or is ready.'
       : ''
+    const programmingAgent = interpretation.intent === 'programming'
+      ? [{
+          agent_name: 'ProgrammingAssistant',
+          system_prompt:
+            'Act as the programming specialist. Solve the exact programming request with correct, directly usable code. Use fenced code blocks with a language tag, explain key decisions briefly, identify filenames when relevant, and never replace code with vague advice. Preserve existing project behavior when modifying code.',
+          model_name: configuredModel('PROGRAMMER_MODEL', fallbackModels.programmer),
+        }]
+      : []
     const result = await callSwarms(
       'Jarvis Slow Layer',
       `Answer the exact user message below. Do not invent a different question or assume the user asked how you are doing.
 User message:
 <<<${question}>>>
 Routing instruction: ${interpretation.task}
+Previous conversation context:
+${getLatestConversationContext()}
+If the route is programming, act as a programming assistant: provide correct, directly usable code in fenced code blocks, explain only what is needed, and include filenames or usage steps when useful.
 Tone note: ${emotion}
 Relevant memories: ${recalledMemories.join('; ') || 'none'}${documentNote}`,
       [
@@ -327,6 +362,7 @@ Relevant memories: ${recalledMemories.join('; ') || 'none'}${documentNote}`,
               'Answer the exact user message, not a generic conversation starter. Follow the routing instruction. If the route is clarify, ask one concise question for the missing subject or document; do not invent context. Do the hard reasoning, planning, and research needed for that message. If it is only a greeting, greet the user briefly; otherwise address the requested subject directly. Return useful findings for a final speaker.',
             model_name: configuredModel('THINKER_MODEL', fallbackModels.thinker),
           },
+          ...programmingAgent,
           {
             agent_name: 'PersonaGuardian',
             system_prompt:
@@ -347,12 +383,13 @@ Relevant memories: ${recalledMemories.join('; ') || 'none'}${documentNote}`,
           },
       ],
     )
-    const delivery = prepareDelivery(getOutput(result))
+    const delivery = prepareDelivery(getOutput(result), interpretation.intent === 'programming')
     if (!delivery.text) {
       updateJob(jobId, { status: 'failed', error: 'Swarms returned no output.' })
       return
     }
 
+    latestConversation = { question, response: delivery.text }
     updateJob(jobId, { status: 'complete', output: delivery.text, chunks: delivery.chunks })
   } catch (error) {
     console.error('Slow thinker failed:', error)
