@@ -23,8 +23,9 @@ let latestConversation = null
 const maxMemoryEntries = 20
 const maxJobEntries = 100
 const firecrawlUrl = 'https://api.firecrawl.dev/v2'
-const maxResearchPages = 8
+const maxResearchPages = 6
 const maxPageChars = 12000
+const excludedResearchDomains = new Set(['facebook.com', 'fb.com', 'reddit.com', 'redd.it'])
 const fallbackModels = {
   research: 'gpt-4o',
   thinker: 'gpt-4o',
@@ -546,6 +547,17 @@ function parseJsonObject(raw) {
   return JSON.parse(match[0])
 }
 
+function isExcludedResearchUrl(value) {
+  try {
+    const hostname = new URL(value).hostname.toLowerCase()
+    return [...excludedResearchDomains].some(
+      (domain) => hostname === domain || hostname.endsWith(`.${domain}`),
+    )
+  } catch {
+    return false
+  }
+}
+
 async function firecrawl(path, body) {
   if (!process.env.FIRECRAWL_API_KEY) throw new Error('FIRECRAWL_API_KEY is not configured on the server.')
   const res = await fetch(`${firecrawlUrl}${path}`, {
@@ -565,13 +577,13 @@ async function planQueries(topic) {
   try {
     const result = await callSwarms(
       'Research Query Planner',
-      `Write 4 different web search queries that together cover this topic: background, latest developments, data and statistics, and opposing views.
+      `Write 4 different web search queries that together cover this topic: background, latest developments, data and statistics, and opposing views. Do not target Facebook, Reddit, or other social-media pages; prefer accessible primary sources, reputable news, research, and official websites.
 Return JSON only in this shape: {"queries":["..."]}
 Topic: ${topic}`,
       [
         {
           agent_name: 'QueryPlanner',
-          system_prompt: 'You write precise web search queries. Return JSON only.',
+          system_prompt: 'You write precise web search queries. Avoid queries targeting Facebook or Reddit. Return JSON only.',
           model_name: configuredModel('RESEARCH_MODEL', fallbackModels.research),
         },
       ],
@@ -598,13 +610,19 @@ async function gatherPages(topic) {
   )
 
   const candidates = new Map()
+  let excludedSourceCount = 0
   for (const search of searches) {
     if (search.status !== 'fulfilled') {
       console.error('Search failed:', search.reason)
       continue
     }
     for (const hit of search.value?.data?.web || []) {
-      if (hit.url && !candidates.has(hit.url)) candidates.set(hit.url, hit.title || '')
+      if (!hit.url) continue
+      if (isExcludedResearchUrl(hit.url)) {
+        excludedSourceCount += 1
+        continue
+      }
+      if (!candidates.has(hit.url)) candidates.set(hit.url, hit.title || '')
     }
   }
 
@@ -628,7 +646,7 @@ async function gatherPages(topic) {
       text,
     })
   })
-  return { queries, pages }
+  return { queries, pages, excludedSourceCount }
 }
 
 function verifyDossier(dossier, pages) {
@@ -663,9 +681,22 @@ async function runResearcher(jobId, topic, createDocument = false, recalledMemor
       return
     }
 
-    const { queries, pages } = await gatherPages(topic)
+    const { queries, pages, excludedSourceCount } = await gatherPages(topic)
+    const excludedSourceNote = excludedSourceCount > 0
+      ? 'Some Facebook or Reddit results were skipped because these sites can restrict automated access.'
+      : null
     if (!pages.size) {
-      const dossier = { topic, queries, summary: '', sources: [], conflicts: [], gaps: ['No pages could be read.'] }
+      const dossier = {
+        topic,
+        queries,
+        summary: '',
+        sources: [],
+        conflicts: [],
+        gaps: [
+          'No pages could be read.',
+          ...(excludedSourceNote ? [excludedSourceNote] : []),
+        ],
+      }
       updateJob(jobId, { status: 'complete', dossier })
       if (createDocument) {
         await runDocumentWriter(
@@ -704,7 +735,13 @@ ${bundle}`,
       ],
     )
 
-    const dossier = { topic, queries, ...verifyDossier(parseJsonObject(getOutput(result)), pages) }
+    const extractedDossier = verifyDossier(parseJsonObject(getOutput(result)), pages)
+    const dossier = {
+      topic,
+      queries,
+      ...extractedDossier,
+      gaps: [...extractedDossier.gaps, ...(excludedSourceNote ? [excludedSourceNote] : [])],
+    }
     updateJob(jobId, { status: 'complete', dossier })
     while (jobs.size > maxJobEntries) jobs.delete(jobs.keys().next().value)
     if (createDocument) {
