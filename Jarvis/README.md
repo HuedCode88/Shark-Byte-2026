@@ -1,6 +1,6 @@
-# Jarvis Swarms test
+# Jarvis: Swarms + ElevenLabs
 
-Small React chat UI that sends questions to a local server, which forwards them to the hosted Swarms API.
+Voice assistant flow: browser recording -> ElevenLabs speech-to-text -> Swarms answer -> ElevenLabs text-to-speech.
 
 ## Run locally
 
@@ -8,9 +8,13 @@ Small React chat UI that sends questions to a local server, which forwards them 
 
    ```env
    SWARMS_API_KEY=your-api-key
+   ELEVENLABS_API_KEY=your-api-key
+   ELEVENLABS_VOICE_ID=your-voice-id
    ```
 
    The `.env` file is ignored by Git and loaded only by the server.
+   Optional model overrides are `ELEVENLABS_STT_MODEL` (defaults to `scribe_v1`)
+   and `ELEVENLABS_TTS_MODEL` (defaults to `eleven_multilingual_v2`).
 
 2. Start the API bridge:
 
@@ -24,4 +28,5 @@ Small React chat UI that sends questions to a local server, which forwards them 
    npm run dev
    ```
 
-The browser calls `POST /api/chat`; the server sends a `MixtureOfAgents` request to `https://api.swarms.world/v1/swarm/completions`.
+The browser sends recordings to `POST /api/stt` and speech text to `POST /api/chat`;
+the recognized Swarms answer is sent to `POST /api/tts`. API keys stay on the server.
