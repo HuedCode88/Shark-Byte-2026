@@ -80,6 +80,54 @@ function DocumentAttachment({ document }) {
   )
 }
 
+function SpreadsheetAttachment({ spreadsheet }) {
+  if (spreadsheet.status === 'pending') {
+    return <div className="spreadsheet-card pending">Preparing your spreadsheet preview...</div>
+  }
+  if (spreadsheet.status === 'failed') {
+    return <div className="spreadsheet-card spreadsheet-error">{spreadsheet.error}</div>
+  }
+  const formats = spreadsheet.formats || ['xlsx', 'csv']
+  return (
+    <section className="spreadsheet-card" aria-label="Generated spreadsheet">
+      <div className="document-header">
+        <div>
+          <span className="document-label">SPREADSHEET READY</span>
+          <h3>{spreadsheet.title}</h3>
+        </div>
+        <span className="document-status">
+          {spreadsheet.flaggedCells > 0 ? `${spreadsheet.flaggedCells} review flags` : 'Preview'}
+        </span>
+      </div>
+      {spreadsheet.html && (
+        <iframe
+          className="spreadsheet-preview"
+          title={`${spreadsheet.title} preview`}
+          srcDoc={spreadsheet.html}
+          sandbox=""
+        />
+      )}
+      {spreadsheet.flaggedCells > 0 && (
+        <p className="spreadsheet-warning">
+          {spreadsheet.flaggedCells} numeric values could not be located in the research findings and should be reviewed.
+        </p>
+      )}
+      <div className="document-actions">
+        {formats.map((format) => (
+          <a
+            className={`download-button ${format === 'xlsx' ? 'primary' : ''}`}
+            href={`/api/spreadsheets/${spreadsheet.id}/export?format=${format}`}
+            download
+            key={format}
+          >
+            Download {format.toUpperCase()}
+          </a>
+        ))}
+      </div>
+    </section>
+  )
+}
+
 function safeWebUrl(value) {
   try {
     const url = new URL(value)
@@ -89,7 +137,7 @@ function safeWebUrl(value) {
   }
 }
 
-function ResearchReport({ dossier, jobId, document, onCreateDocument }) {
+function ResearchReport({ dossier, jobId, document, spreadsheet, onCreateDocument, onCreateSpreadsheet }) {
   const sources = Array.isArray(dossier.sources)
     ? dossier.sources.filter((source) => source && typeof source === 'object')
     : []
@@ -177,6 +225,18 @@ function ResearchReport({ dossier, jobId, document, onCreateDocument }) {
           {document?.status === 'pending' ? 'Creating document...' : 'Create document from research'}
         </button>
       )}
+      {spreadsheet?.status !== 'ready' && (
+        <button
+          className="research-document-button"
+          type="button"
+          disabled={spreadsheet?.status === 'pending'}
+          onClick={() => onCreateSpreadsheet(jobId)}
+        >
+          {spreadsheet?.status === 'pending'
+            ? 'Creating spreadsheet...'
+            : 'Create spreadsheet from research'}
+        </button>
+      )}
       {queries.length > 0 && (
         <details className="research-queries">
           <summary>Search queries used</summary>
@@ -249,6 +309,48 @@ function App() {
     }
   }
 
+  async function createSpreadsheetFromResearch(jobId) {
+    if (isLoading) return
+    setError('')
+    setIsLoading(true)
+    setLoadingText('Preparing the research spreadsheet')
+    setMessages((current) => current.map((message) => (
+      message.jobId === jobId ? { ...message, spreadsheet: { status: 'pending' } } : message
+    )))
+    try {
+      const response = await fetch(`/api/research/${jobId}/spreadsheet`, { method: 'POST' })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || 'The spreadsheet could not be created.')
+      for (let attempt = 0; attempt < 240; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 500))
+        const jobResponse = await fetch(`/api/chat/${jobId}`)
+        const job = await jobResponse.json()
+        if (!jobResponse.ok) throw new Error(job.error || 'The research job could not be found.')
+        if (job.spreadsheet?.status === 'ready' || job.spreadsheet?.status === 'failed') {
+          setMessages((current) => current.map((message) => (
+            message.jobId === jobId ? { ...message, spreadsheet: job.spreadsheet } : message
+          )))
+          if (job.spreadsheet.status === 'failed') {
+            throw new Error(job.spreadsheet.error || 'The spreadsheet could not be created.')
+          }
+          return
+        }
+      }
+      throw new Error('The spreadsheet took too long to finish.')
+    } catch (requestError) {
+      const errorMessage = requestError instanceof Error
+        ? requestError.message
+        : 'The spreadsheet could not be created.'
+      setMessages((current) => current.map((message) => (
+        message.jobId === jobId
+          ? { ...message, spreadsheet: { status: 'failed', error: errorMessage } }
+          : message
+      )))
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
   async function sendQuestion(event) {
     event.preventDefault()
     const trimmedQuestion = question.trim()
@@ -297,7 +399,7 @@ function App() {
 
     async function waitForThinker(jobId, mode) {
       let responseAdded = false
-      const researching = mode === 'research' || mode === 'research_document'
+      const researching = mode === 'research' || mode === 'research_document' || mode === 'research_spreadsheet'
       const maxAttempts = researching ? 480 : 120
       const pollInterval = researching ? 500 : 250
       if (researching) setLoadingText('Searching the web')
@@ -317,34 +419,51 @@ function App() {
                 text: job.dossier.summary || 'Research complete.',
                 research: job.dossier,
                 document: job.document,
+                spreadsheet: job.spreadsheet,
                 jobId,
               }])
               responseAdded = true
-            } else if (job.document?.status === 'ready' || job.document?.status === 'failed') {
+            } else if (
+              (job.document?.status === 'ready' || job.document?.status === 'failed')
+              || (job.spreadsheet?.status === 'ready' || job.spreadsheet?.status === 'failed')
+            ) {
               setMessages((current) => current.map((message) => (
-                message.jobId === jobId ? { ...message, document: job.document } : message
+                message.jobId === jobId
+                  ? { ...message, document: job.document, spreadsheet: job.spreadsheet }
+                  : message
               )))
             }
-            if (!job.document || job.document.status === 'ready' || job.document.status === 'failed') return
-            setLoadingText('Turning the research into a document')
+            const documentDone = !job.document || job.document.status === 'ready' || job.document.status === 'failed'
+            const spreadsheetDone = !job.spreadsheet
+              || job.spreadsheet.status === 'ready'
+              || job.spreadsheet.status === 'failed'
+            if (documentDone && spreadsheetDone) return
+            setLoadingText(job.spreadsheet ? 'Turning the research into a spreadsheet' : 'Turning the research into a document')
             continue
           }
 
           if (!responseAdded) {
             setMessages((current) => [
               ...current,
-              { role: 'assistant', text: job.output, document: job.document, jobId },
+              { role: 'assistant', text: job.output, document: job.document, spreadsheet: job.spreadsheet, jobId },
             ])
             responseAdded = true
-          } else if (job.document?.status === 'ready' || job.document?.status === 'failed') {
+          } else if (
+            (job.document?.status === 'ready' || job.document?.status === 'failed')
+            || (job.spreadsheet?.status === 'ready' || job.spreadsheet?.status === 'failed')
+          ) {
             setMessages((current) => current.map((message) => (
               message.jobId === jobId
-                ? { ...message, document: job.document }
+                ? { ...message, document: job.document, spreadsheet: job.spreadsheet }
                 : message
             )))
           }
 
-          if (!job.document || job.document.status === 'ready' || job.document.status === 'failed') return
+          const documentDone = !job.document || job.document.status === 'ready' || job.document.status === 'failed'
+          const spreadsheetDone = !job.spreadsheet
+            || job.spreadsheet.status === 'ready'
+            || job.spreadsheet.status === 'failed'
+          if (documentDone && spreadsheetDone) return
         }
 
         if (job.status === 'researching') setLoadingText('Searching and reading sources')
@@ -395,9 +514,12 @@ function App() {
                       dossier={message.research}
                       jobId={message.jobId}
                       document={message.document}
+                      spreadsheet={message.spreadsheet}
                       onCreateDocument={createDocumentFromResearch}
+                      onCreateSpreadsheet={createSpreadsheetFromResearch}
                     />
                     {message.document && <DocumentAttachment document={message.document} />}
+                    {message.spreadsheet && <SpreadsheetAttachment spreadsheet={message.spreadsheet} />}
                   </>
                 )
                 : (
@@ -405,6 +527,7 @@ function App() {
                     <p className={message.role === 'assistant' ? 'assistant-content' : undefined}>
                       <MessageContent text={message.text} />
                     </p>
+                    {message.spreadsheet && <SpreadsheetAttachment spreadsheet={message.spreadsheet} />}
                   </>
                 )}
               {!message.research && message.document && <DocumentAttachment document={message.document} />}
