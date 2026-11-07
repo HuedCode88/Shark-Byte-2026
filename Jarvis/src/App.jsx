@@ -1,121 +1,56 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { WindowManager } from '../client/WindowManager'
+import { useVoiceSession } from '../client/useVoiceSession'
+import { useUiStore } from '../client/uiStore'
 import './App.css'
 
 function App() {
-  const [question, setQuestion] = useState('')
+  const [transcript, setTranscript] = useState('')
   const [messages, setMessages] = useState([])
-  const [isLoading, setIsLoading] = useState(false)
-  const [error, setError] = useState('')
+  const { sendTranscript, isThinking, answer, error } = useVoiceSession()
+  const windows = useUiStore((state) => state.windows)
+  const undo = useUiStore((state) => state.undo)
+  const setTheme = useUiStore((state) => state.applyCommands)
 
-  async function sendQuestion(event) {
+  useEffect(() => {
+    if (answer) setMessages((current) => [...current, { role: 'assistant', text: answer }])
+  }, [answer])
+
+  const submit = (event) => {
     event.preventDefault()
-    const trimmedQuestion = question.trim()
-
-    if (!trimmedQuestion || isLoading) return
-
-    setQuestion('')
-    setError('')
-    setMessages((current) => [...current, { role: 'user', text: trimmedQuestion }])
-    setIsLoading(true)
-
-    try {
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question: trimmedQuestion }),
-      })
-      const responseText = await response.text()
-      let data
-
-      try {
-        data = responseText ? JSON.parse(responseText) : {}
-      } catch {
-        throw new Error(
-          `The server returned an invalid response${responseText ? `: ${responseText.slice(0, 120)}` : '.'}`,
-        )
-      }
-
-      if (!response.ok) {
-        const errorMessage =
-          typeof data.error === 'string' ? data.error : 'The swarm could not answer right now.'
-        throw new Error(errorMessage)
-      }
-
-      if (typeof data.output !== 'string' || !data.output) {
-        throw new Error('The swarm returned no text response.')
-      }
-
-      setMessages((current) => [...current, { role: 'assistant', text: data.output }])
-    } catch (requestError) {
-      setError(requestError.message)
-    } finally {
-      setIsLoading(false)
-    }
+    if (!transcript.trim() || isThinking) return
+    const nextMessages = [...messages, { role: 'user', text: transcript.trim() }]
+    setMessages(nextMessages)
+    sendTranscript(transcript, undefined, nextMessages)
+    setTranscript('')
   }
 
-  return (
-    <main className="app-shell">
-      <header className="app-header">
-        <div className="brand-mark" aria-hidden="true">S</div>
-        <div>
-          <p className="eyebrow">SWARMS API TEST</p>
-          <h1>Ask the swarm</h1>
+  return <main className="app-shell">
+    <header className="app-header">
+      <div className="brand-mark" aria-hidden="true">S</div>
+      <div><p className="eyebrow">GENERATIVE UI / VOICE SESSION</p><h1>Jarvis workspace</h1></div>
+      <div className="header-actions">
+        <button className="secondary-button" onClick={undo} disabled={!windows.length}>Undo</button>
+      </div>
+    </header>
+    <section className="workspace-card">
+      <div className="conversation" aria-live="polite">
+        {messages.length === 0 && <p className="conversation-empty">Your conversation with Jarvis will appear here.</p>}
+        {messages.map((message, index) => <div className={`conversation-message ${message.role}`} key={`${message.role}-${index}`}><span>{message.role === 'user' ? 'You' : 'Jarvis'}</span><p>{message.text}</p></div>)}
+      </div>
+      <WindowManager />
+      {isThinking && <div className="thinking-window" data-ui-id="thinking"><span className="pulse" /> Thinking with the swarm…</div>}
+      {error && <p className="error-message" role="alert">{error}</p>}
+      <form className="question-form" onSubmit={submit}>
+        <label htmlFor="transcript">Talk to Jarvis</label>
+        <div className="input-row">
+          <input id="transcript" value={transcript} onChange={(event) => setTranscript(event.target.value)} placeholder="Compare two options, summarize this, show a chart…" maxLength={2000} disabled={isThinking} />
+          <button type="submit" disabled={!transcript.trim() || isThinking}>{isThinking ? 'Working…' : 'Compose'} <span aria-hidden="true">→</span></button>
         </div>
-        <span className="status"><span /> Ready to connect</span>
-      </header>
-
-      <section className="chat-card" aria-label="Swarms chat">
-        <div className="chat-intro">
-          <p className="eyebrow">MULTI-AGENT RESPONSE</p>
-          <h2>Send a question to your swarm.</h2>
-          <p>Each message is passed to the Swarms API and returned here as a response.</p>
-        </div>
-
-        <div className="messages" aria-live="polite">
-          {messages.length === 0 && (
-            <div className="empty-state">
-              <span className="empty-icon">✦</span>
-              <p>Your swarm&apos;s response will appear here.</p>
-            </div>
-          )}
-          {messages.map((message, index) => (
-            <div className={`message-row ${message.role}`} key={`${message.role}-${index}`}>
-              <span className="message-label">{message.role === 'user' ? 'You' : 'Swarm'}</span>
-              <p>{message.text}</p>
-            </div>
-          ))}
-          {isLoading && (
-            <div className="message-row assistant">
-              <span className="message-label">Swarm</span>
-              <p className="loading">Thinking<span>.</span><span>.</span><span>.</span></p>
-            </div>
-          )}
-        </div>
-
-        {error && <p className="error-message" role="alert">{error}</p>}
-
-        <form className="question-form" onSubmit={sendQuestion}>
-          <label htmlFor="question">Your question</label>
-          <div className="input-row">
-            <input
-              id="question"
-              value={question}
-              onChange={(event) => setQuestion(event.target.value)}
-              placeholder="What would you like to explore?"
-              disabled={isLoading}
-              maxLength={2000}
-            />
-            <button type="submit" disabled={!question.trim() || isLoading}>
-              {isLoading ? 'Sending...' : 'Send'}
-              {!isLoading && <span aria-hidden="true">→</span>}
-            </button>
-          </div>
-        </form>
-      </section>
-
-      <footer>Powered by <strong>Swarms</strong> · API key stays server-side</footer>
-    </main>
-  )
+      </form>
+    </section>
+    <footer><button className="text-button" onClick={() => setTheme([{ op: 'setTheme', tokens: { accent: '#9de6ff' } }])}>Change accent</button> · API key stays server-side</footer>
+  </main>
 }
 
 export default App
