@@ -419,7 +419,9 @@ function App() {
                 text: job.dossier.summary || 'Research complete.',
                 research: job.dossier,
                 document: job.document,
-                spreadsheet: job.spreadsheet,
+                spreadsheet: job.spreadsheet?.status === 'ready' || job.spreadsheet?.status === 'failed'
+                  ? job.spreadsheet
+                  : undefined,
                 jobId,
               }])
               responseAdded = true
@@ -445,7 +447,15 @@ function App() {
           if (!responseAdded) {
             setMessages((current) => [
               ...current,
-              { role: 'assistant', text: job.output, document: job.document, spreadsheet: job.spreadsheet, jobId },
+              {
+                role: 'assistant',
+                text: job.output,
+                document: job.document,
+                spreadsheet: job.spreadsheet?.status === 'ready' || job.spreadsheet?.status === 'failed'
+                  ? job.spreadsheet
+                  : undefined,
+                jobId,
+              },
             ])
             responseAdded = true
           } else if (
