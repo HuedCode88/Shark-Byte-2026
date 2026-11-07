@@ -1,8 +1,41 @@
 import 'dotenv/config'
+import { randomUUID } from 'node:crypto'
 import { createServer } from 'node:http'
 
 const port = Number(process.env.PORT || 3001)
 const swarmsUrl = 'https://api.swarms.world/v1/swarm/completions'
+const jobs = new Map()
+const memories = []
+const maxMemoryEntries = 20
+const maxJobEntries = 100
+const fallbackModels = {
+  thinker: 'gpt-4o',
+  memory: 'gpt-4o-mini',
+  guardian: 'gpt-4o',
+  delivery: 'gpt-4o-mini',
+  initiator: 'gpt-4o',
+}
+
+function configuredModel(name, fallback) {
+  const model = process.env[name]?.trim()
+  if (!model || model === 'claude-sonnet-4') return fallback
+  return model
+}
+
+const fastAgents = {
+  speaker: {
+    model: process.env.SPEAKER_MODEL || 'local-fast',
+    role: 'Owns the spoken response. Uses one to three short, casual sentences.',
+  },
+  turnTaker: {
+    model: process.env.TURN_TAKER_MODEL || 'local-fast',
+    role: 'Decides whether the user finished and whether a brief interjection is appropriate.',
+  },
+  emotionReader: {
+    model: process.env.EMOTION_MODEL || 'local-fast',
+    role: 'Classifies mood, energy, and intent into a concise tone note.',
+  },
+}
 
 function sendJson(response, status, body) {
   response.writeHead(status, { 'Content-Type': 'application/json' })
@@ -395,8 +428,8 @@ const server = createServer(async (request, response) => {
     return
   }
 
-  if (!process.env.SWARMS_API_KEY) {
-    sendJson(response, 500, { error: 'SWARMS_API_KEY is not configured on the server.' })
+  if (request.method !== 'POST' || request.url !== '/api/chat') {
+    sendJson(response, 404, { error: 'Not found' })
     return
   }
 
