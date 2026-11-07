@@ -7,7 +7,6 @@ import {
   exportDocument,
   getDocument,
   isDocumentContextFollowUp,
-  isDocumentContinuation,
   parseDocSpec,
   renderHtml,
   saveDocument,
@@ -248,6 +247,10 @@ User message:
       }],
     )
     const plan = parseOrchestratorPlan(getOutput(result), question)
+    const explicitNewDocument = wantsDocument(question) && !isDocumentContextFollowUp(question)
+    if (explicitNewDocument) {
+      return { ...plan, intent: 'create_document', task: question, needsClarification: false }
+    }
     if (hasDocument && (wantsDocumentEdit(question) || isDocumentContextFollowUp(question))) {
       return { ...plan, intent: 'edit_document', task: question, needsClarification: false }
     }
@@ -509,13 +512,16 @@ const server = createServer(async (request, response) => {
       roles: fastAgents,
     })
     const existingDocument = latestDocumentId ? getDocument(latestDocumentId) : null
+    const explicitNewDocument = wantsDocument(trimmedQuestion)
+      && !isDocumentContextFollowUp(trimmedQuestion)
     const editingDocument = Boolean(
       existingDocument
+      && !explicitNewDocument
       && (interpretation.intent === 'edit_document'
         || wantsDocumentEdit(trimmedQuestion)
-        || isDocumentContinuation(trimmedQuestion)),
+        || isDocumentContextFollowUp(trimmedQuestion)),
     )
-    const creatingDocument = interpretation.intent === 'create_document' || wantsDocument(trimmedQuestion)
+    const creatingDocument = explicitNewDocument || interpretation.intent === 'create_document'
     if (creatingDocument || editingDocument) {
       updateJob(jobId, { document: { status: 'pending' } })
       void runDocumentWriter(
