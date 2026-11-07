@@ -1,121 +1,120 @@
 import { useState } from 'react'
-import heroImg from './assets/hero.png'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
 import './App.css'
 
 function App() {
-  const [count, setCount] = useState(0)
+  const [question, setQuestion] = useState('')
+  const [messages, setMessages] = useState([])
+  const [isLoading, setIsLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  async function sendQuestion(event) {
+    event.preventDefault()
+    const trimmedQuestion = question.trim()
+
+    if (!trimmedQuestion || isLoading) return
+
+    setQuestion('')
+    setError('')
+    setMessages((current) => [...current, { role: 'user', text: trimmedQuestion }])
+    setIsLoading(true)
+
+    try {
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: trimmedQuestion }),
+      })
+      const responseText = await response.text()
+      let data
+
+      try {
+        data = responseText ? JSON.parse(responseText) : {}
+      } catch {
+        throw new Error(
+          `The server returned an invalid response${responseText ? `: ${responseText.slice(0, 120)}` : '.'}`,
+        )
+      }
+
+      if (!response.ok) {
+        const errorMessage =
+          typeof data.error === 'string' ? data.error : 'The swarm could not answer right now.'
+        throw new Error(errorMessage)
+      }
+
+      if (typeof data.output !== 'string' || !data.output) {
+        throw new Error('The swarm returned no text response.')
+      }
+
+      setMessages((current) => [...current, { role: 'assistant', text: data.output }])
+    } catch (requestError) {
+      setError(requestError.message)
+    } finally {
+      setIsLoading(false)
+    }
+  }
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
+    <main className="app-shell">
+      <header className="app-header">
+        <div className="brand-mark" aria-hidden="true">S</div>
         <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.jsx</code> and save to test <code>HMR</code>
-          </p>
+          <p className="eyebrow">SWARMS API TEST</p>
+          <h1>Ask the swarm</h1>
         </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
+        <span className="status"><span /> Ready to connect</span>
+      </header>
+
+      <section className="chat-card" aria-label="Swarms chat">
+        <div className="chat-intro">
+          <p className="eyebrow">MULTI-AGENT RESPONSE</p>
+          <h2>Send a question to your swarm.</h2>
+          <p>Each message is passed to the Swarms API and returned here as a response.</p>
+        </div>
+
+        <div className="messages" aria-live="polite">
+          {messages.length === 0 && (
+            <div className="empty-state">
+              <span className="empty-icon">✦</span>
+              <p>Your swarm&apos;s response will appear here.</p>
+            </div>
+          )}
+          {messages.map((message, index) => (
+            <div className={`message-row ${message.role}`} key={`${message.role}-${index}`}>
+              <span className="message-label">{message.role === 'user' ? 'You' : 'Swarm'}</span>
+              <p>{message.text}</p>
+            </div>
+          ))}
+          {isLoading && (
+            <div className="message-row assistant">
+              <span className="message-label">Swarm</span>
+              <p className="loading">Thinking<span>.</span><span>.</span><span>.</span></p>
+            </div>
+          )}
+        </div>
+
+        {error && <p className="error-message" role="alert">{error}</p>}
+
+        <form className="question-form" onSubmit={sendQuestion}>
+          <label htmlFor="question">Your question</label>
+          <div className="input-row">
+            <input
+              id="question"
+              value={question}
+              onChange={(event) => setQuestion(event.target.value)}
+              placeholder="What would you like to explore?"
+              disabled={isLoading}
+              maxLength={2000}
+            />
+            <button type="submit" disabled={!question.trim() || isLoading}>
+              {isLoading ? 'Sending...' : 'Send'}
+              {!isLoading && <span aria-hidden="true">→</span>}
+            </button>
+          </div>
+        </form>
       </section>
 
-      <div className="ticks"></div>
-
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
+      <footer>Powered by <strong>Swarms</strong> · API key stays server-side</footer>
+    </main>
   )
 }
 
