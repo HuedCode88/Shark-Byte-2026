@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useSpeech } from './hooks/useSpeech'
 import { useSpeechRecognition } from './hooks/useSpeechRecognition'
 import SpeechWave from './components/SpeechWave'
@@ -190,11 +190,61 @@ function ResearchReport({ dossier, jobId, document, onCreateDocument }) {
   )
 }
 
+function JobSearchResults({ result }) {
+  const jobs = Array.isArray(result.jobs)
+    ? result.jobs.filter((job) => job && typeof job === 'object')
+    : []
+
+  return (
+    <section className="job-search-results" aria-label="Job search results">
+      <header className="job-search-header">
+        <span className="research-label">JOB SEARCH</span>
+        <h3>{result.summary || `${jobs.length} matching listings`}</h3>
+        {result.query && <p>Search: {result.query}</p>}
+      </header>
+      {result.fallback && (
+        <p className="job-fallback-note" role="status">
+          These are search-result links. Some sites blocked automated detail checks, so confirm the role details on the source page.
+        </p>
+      )}
+      {jobs.length > 0 ? (
+        <div className="job-listings">
+          {jobs.map((job, index) => {
+            const url = safeWebUrl(job.url)
+            if (!url || typeof job.title !== 'string') return null
+            const details = [job.company, job.location, job.workMode, job.employmentType, job.salary, job.postedDate]
+              .filter((value) => typeof value === 'string' && value.trim())
+
+            return (
+              <article className="job-result" key={`${url}-${index}`}>
+                <h4>{job.title}</h4>
+                {details.length > 0 && <p className="job-details">{details.join(' · ')}</p>}
+                {typeof job.description === 'string' && job.description && (
+                  <p className="job-description">{job.description}</p>
+                )}
+                <a className="job-apply-link" href={url} target="_blank" rel="noreferrer">
+                  View listing <span aria-hidden="true">↗</span>
+                </a>
+              </article>
+            )
+          })}
+        </div>
+      ) : (
+        <p className="job-empty-state">No verified listings were found. Try adding a role, company, or location.</p>
+      )}
+      {result.searchedAt && <p className="job-searched-at">Searched {new Date(result.searchedAt).toLocaleString()}</p>}
+    </section>
+  )
+}
+
 export default function App() {
   const [messages, setMessages] = useState([])
   const [isLoading, setIsLoading] = useState(false)
   const [loadingText, setLoadingText] = useState('Thinking')
   const [error, setError] = useState('')
+  const [conversationActive, setConversationActive] = useState(false)
+  const conversationActiveRef = useRef(false)
+  const resumeTimeoutRef = useRef(null)
   const { speak, stop: stopSpeaking, speaking, levelRef } = useSpeech()
   const {
     start,
@@ -205,19 +255,43 @@ export default function App() {
     error: recognitionError,
   } = useSpeechRecognition({
     levelRef,
+    onError: () => {
+      conversationActiveRef.current = false
+      setConversationActive(false)
+    },
     onFinish: (text) => {
       void sendQuestion(text)
     },
   })
 
+  useEffect(() => () => window.clearTimeout(resumeTimeoutRef.current), [])
+
+  async function beginListening() {
+    await start()
+    if (!conversationActiveRef.current) stop()
+  }
+
+  function resumeConversation() {
+    window.clearTimeout(resumeTimeoutRef.current)
+    resumeTimeoutRef.current = window.setTimeout(() => {
+      if (conversationActiveRef.current) void beginListening()
+    }, 350)
+  }
+
   function handleMicClick() {
-    if (listening) {
-      stop()
+    if (conversationActiveRef.current) {
+      conversationActiveRef.current = false
+      setConversationActive(false)
+      window.clearTimeout(resumeTimeoutRef.current)
+      stopSpeaking()
+      if (listening) stop()
       return
     }
+    conversationActiveRef.current = true
+    setConversationActive(true)
     stopSpeaking()
     setError('')
-    start()
+    void beginListening()
   }
 
   async function createDocumentFromResearch(jobId) {
@@ -316,14 +390,17 @@ export default function App() {
       setError(requestError.message)
     } finally {
       setIsLoading(false)
+      if (conversationActiveRef.current) resumeConversation()
     }
 
     async function waitForThinker(jobId, mode) {
       let responseAdded = false
       const researching = mode === 'research' || mode === 'research_document'
-      const maxAttempts = researching ? 480 : 120
-      const pollInterval = researching ? 500 : 250
+      const jobSearching = mode === 'job_search'
+      const maxAttempts = researching || jobSearching ? 480 : 120
+      const pollInterval = researching || jobSearching ? 500 : 150
       if (researching) setLoadingText('Searching the web')
+      if (jobSearching) setLoadingText('Searching current job listings')
 
       for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
         await new Promise((resolve) => setTimeout(resolve, pollInterval))
@@ -333,9 +410,22 @@ export default function App() {
         if (!response.ok) throw new Error(job.error || 'The chat job could not be found.')
 
         if (job.status === 'complete') {
+          if (job.jobSearch) {
+            if (!responseAdded) {
+              setMessages((current) => [...current, {
+                role: 'assistant',
+                text: job.jobSearch.summary,
+                jobSearch: job.jobSearch,
+                jobId,
+              }])
+              responseAdded = true
+              if (job.jobSearch.summary) await speak(job.jobSearch.summary)
+            }
+            return
+          }
+
           if (job.dossier) {
             if (!responseAdded) {
-              if (job.dossier.summary) speak(job.dossier.summary)
               setMessages((current) => [...current, {
                 role: 'assistant',
                 text: job.dossier.summary || 'Research complete.',
@@ -344,6 +434,7 @@ export default function App() {
                 jobId,
               }])
               responseAdded = true
+              if (job.dossier.summary) await speak(job.dossier.summary)
             } else if (job.document?.status === 'ready' || job.document?.status === 'failed') {
               setMessages((current) => current.map((message) => (
                 message.jobId === jobId ? { ...message, document: job.document } : message
@@ -355,12 +446,12 @@ export default function App() {
           }
 
           if (!responseAdded) {
-            if (job.output) speak(job.output)
             setMessages((current) => [
               ...current,
               { role: 'assistant', text: job.output, document: job.document, jobId },
             ])
             responseAdded = true
+            if (job.output) await speak(job.output)
           } else if (job.document?.status === 'ready' || job.document?.status === 'failed') {
             setMessages((current) => current.map((message) => (
               message.jobId === jobId
@@ -373,6 +464,7 @@ export default function App() {
         }
 
         if (job.status === 'researching') setLoadingText('Searching and reading sources')
+        if (job.status === 'searching_jobs') setLoadingText('Searching current job listings')
         if (job.status === 'failed') throw new Error(job.error)
       }
 
@@ -388,8 +480,16 @@ export default function App() {
           <p className="eyebrow">VOICE ASSISTANT</p>
           <h1>Jarvis</h1>
         </div>
-        <span className={`status${listening ? ' active' : ''}`}>
-          <span /> {listening ? 'Listening' : speaking ? 'Speaking' : 'Ready'}
+        <span className={`status${conversationActive ? ' active' : ''}`}>
+          <span /> {listening
+            ? 'Listening'
+            : transcribing
+              ? 'Transcribing'
+              : speaking
+                ? 'Speaking'
+                : isLoading
+                  ? loadingText
+                  : conversationActive ? 'Your turn' : 'Ready'}
         </span>
       </header>
 
@@ -413,9 +513,11 @@ export default function App() {
               key={`${message.role}-${index}`}
             >
               <span className="message-label">
-                {message.research ? 'Research' : 'Jarvis'}
+                {message.jobSearch ? 'Jobs' : message.research ? 'Research' : 'Jarvis'}
               </span>
-              {message.research
+              {message.jobSearch
+                ? <JobSearchResults result={message.jobSearch} />
+                : message.research
                 ? (
                   <>
                     <ResearchReport
@@ -461,12 +563,11 @@ export default function App() {
           </div>
           <div className="voice-actions">
             <button
-              className={`mic-button${listening ? ' listening' : ''}`}
+              className={`mic-button${conversationActive ? ' listening' : ''}`}
               type="button"
               onClick={handleMicClick}
-              disabled={isLoading || transcribing}
             >
-              {listening ? 'Finish recording' : transcribing ? 'Transcribing...' : 'Start listening'}
+              {conversationActive ? 'End conversation' : 'Start conversation'}
             </button>
             {speaking && (
               <button className="stop-speaking-button" type="button" onClick={stopSpeaking}>
@@ -479,10 +580,12 @@ export default function App() {
               ? 'Listening'
               : transcribing
                 ? 'Transcribing'
-                : isLoading
-                  ? loadingText
-                  : speaking
-                    ? 'Speaking'
+                : speaking
+                  ? 'Speaking'
+                  : isLoading
+                    ? loadingText
+                    : conversationActive
+                      ? 'Ready for you'
                     : 'Ready'}
           </p>
           {finalText && <p className="transcript-note">Heard: {finalText}</p>}

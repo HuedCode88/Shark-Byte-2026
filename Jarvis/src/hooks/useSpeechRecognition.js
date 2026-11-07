@@ -1,9 +1,10 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 
 export function useSpeechRecognition({
-  silenceMs = 2000,
+  silenceMs = 1200,
   silenceThreshold = 0.015, // tune for your mic
   onFinish,
+  onError,
   levelRef,
 } = {}) {
   const [listening, setListening] = useState(false);
@@ -14,10 +15,12 @@ export function useSpeechRecognition({
   const recorderRef = useRef(null);
   const timerRef = useRef(null);
   const onFinishRef = useRef(onFinish);
+  const onErrorRef = useRef(onError);
 
   useEffect(() => {
     onFinishRef.current = onFinish;
-  }, [onFinish]);
+    onErrorRef.current = onError;
+  }, [onFinish, onError]);
 
   useEffect(() => () => clearInterval(timerRef.current), []);
 
@@ -30,6 +33,7 @@ export function useSpeechRecognition({
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch (e) {
       setError(e.name);
+      onErrorRef.current?.(e.name);
       return;
     }
 
@@ -38,7 +42,6 @@ export function useSpeechRecognition({
     recorderRef.current = recorder;
     let heardSpeech = false;
     let lastSound = Date.now();
-    const startedAt = Date.now();
 
     const ctx = new AudioContext();
     const analyser = ctx.createAnalyser();
@@ -58,13 +61,16 @@ export function useSpeechRecognition({
         lastSound = Date.now();
       }
       const silentTooLong = heardSpeech && Date.now() - lastSound > silenceMs;
-      const gaveUp = !heardSpeech && Date.now() - startedAt > silenceMs + 4000;
-      if ((silentTooLong || gaveUp) && recorder.state === "recording") {
+      if (silentTooLong && recorder.state === "recording") {
         recorder.stop();
       }
     }, 100);
 
-    recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+    recorder.ondataavailable = (e) => {
+      if (!e.data.size) return;
+      chunks.push(e.data);
+      if (!heardSpeech && chunks.length > 2) chunks.shift();
+    };
 
     recorder.onstop = async () => {
       clearInterval(timerRef.current);
@@ -86,12 +92,13 @@ export function useSpeechRecognition({
         if (text) onFinishRef.current?.(text);
       } catch (e) {
         setError(e.message);
+        onErrorRef.current?.(e.message);
       } finally {
         setTranscribing(false);
       }
     };
 
-    recorder.start();
+    recorder.start(1000);
     setListening(true);
   }, [silenceMs, silenceThreshold, levelRef]);
 

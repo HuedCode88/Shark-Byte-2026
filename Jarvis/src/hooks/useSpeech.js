@@ -76,12 +76,14 @@ export function useSpeech() {
       .then((r) => (r.ok ? r.blob() : Promise.reject(new Error("TTS failed"))))
       .catch(() => null);
 
-    queueRef.current = queueRef.current.then(async () => {
+    const playback = queueRef.current.then(async () => {
       const blob = await audioPromise;
       if (blob && !signal.aborted) await playBlob(blob);
       pendingRef.current = Math.max(0, pendingRef.current - 1);
       if (pendingRef.current === 0) setSpeaking(false);
     });
+    queueRef.current = playback
+    return playback
   }, []);
 
   return { speak, stop, speaking, levelRef, supported: true, voices: [] };

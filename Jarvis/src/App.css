@@ -104,6 +104,19 @@ h2 { margin: 10px 0 8px; font: 500 clamp(30px, 5vw, 46px)/1.05 Georgia, serif; l
 .code-block { max-width: 100%; margin: 0; padding: 14px; overflow: auto; color: #e8f4dc; font: 13px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre; tab-size: 4; }
 .code-block code { font: inherit; }
 .research-report { padding: 18px; border: 1px solid var(--line); border-radius: 14px; background: #edf3ee; text-align: left; }
+.job-search-results { padding: 18px; border: 1px solid var(--line); border-radius: 14px; background: #edf3ee; text-align: left; }
+.job-search-header { margin-bottom: 14px; }
+.job-search-header h3 { margin: 5px 0 0; color: var(--ink); font: 500 21px/1.25 Georgia, serif; }
+.job-search-header > p { margin: 7px 0 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.job-fallback-note { margin: 0 0 12px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.job-listings { display: grid; gap: 10px; }
+.job-result { padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--cream); }
+.job-result h4 { margin: 0; color: var(--ink); font-size: 15px; line-height: 1.4; }
+.job-details { margin: 6px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.job-description { margin: 9px 0 0; color: var(--ink); font-size: 13px; line-height: 1.5; white-space: normal; }
+.job-apply-link { display: inline-flex; gap: 6px; align-items: center; margin-top: 10px; color: var(--ink); font-size: 12px; font-weight: 700; text-decoration-color: var(--dark-mint); text-underline-offset: 3px; }
+.job-empty-state, .job-searched-at { margin: 12px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.job-searched-at { font-size: 11px; }
 .research-header { margin-bottom: 14px; }
 .research-label { color: var(--dark-mint); font: 700 10px/1.2 ui-monospace, monospace; letter-spacing: .1em; }
 .research-header h3 { margin: 5px 0 0; color: var(--ink); font: 500 22px/1.2 Georgia, serif; }
