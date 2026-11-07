@@ -1,18 +1,12 @@
 import { useSpeech } from "../hooks/useSpeech";
 import { useSpeechRecognition } from "../hooks/useSpeechRecognition";
+import SpeechWave from "./SpeechWave";
 
 export default function Jarvis() {
-  const { speak, stop: stopSpeaking, speaking } = useSpeech();
+  const { speak, stop: stopSpeaking, speaking, levelRef } = useSpeech();
 
-  const { start, stop, listening, finalText, interim, error, supported } =
-    useSpeechRecognition({
-      silenceMs: 2000,
-      onFinish: (fullText) => speak(fullText, { rate: 0.95 }), // read it all back
-    });
-
-  if (!supported) {
-    return <p>Speech recognition isn't supported here. Try Chrome or Edge.</p>;
-  }
+  const { start, stop, listening, transcribing, finalText, error } =
+    useSpeechRecognition({ onFinish: (text) => speak(text) });
 
   function handleMicClick() {
     if (listening) {
@@ -25,18 +19,23 @@ export default function Jarvis() {
 
   return (
     <div>
-      <button onClick={handleMicClick}>
-        {listening ? "Done talking" : speaking ? "Speaking…" : "🎤 Start talking"}
+      <SpeechWave active={speaking} levelRef={levelRef} />
+
+      <button onClick={handleMicClick} disabled={transcribing}>
+        {listening
+          ? "Done talking"
+          : transcribing
+          ? "Transcribing…"
+          : speaking
+          ? "Speaking…"
+          : "🎤 Start talking"}
       </button>
 
       {speaking && <button onClick={stopSpeaking}>Stop reading</button>}
-      {error && <p style={{ color: "red" }}>Mic error: {error}</p>}
+      {error && <p style={{ color: "red" }}>Error: {error}</p>}
 
       <div style={{ marginTop: 16, minHeight: 80 }}>
-        <p>
-          {finalText}
-          <span style={{ opacity: 0.5 }}>{interim}</span>
-        </p>
+        <p>{finalText}</p>
       </div>
     </div>
   );

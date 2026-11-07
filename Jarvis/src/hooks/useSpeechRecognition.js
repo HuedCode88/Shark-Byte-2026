@@ -1,97 +1,100 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 
 export function useSpeechRecognition({
-  lang = "en-US",
-  silenceMs = 2000, // auto-finish after this much silence
-  onFinish,         // called with the full transcript when the user is done
+  silenceMs = 2000,
+  silenceThreshold = 0.015, // tune for your mic
+  onFinish,
 } = {}) {
   const [listening, setListening] = useState(false);
-  const [finalText, setFinalText] = useState(""); // confirmed words
-  const [interim, setInterim] = useState("");     // words still being recognized
+  const [transcribing, setTranscribing] = useState(false);
+  const [finalText, setFinalText] = useState("");
   const [error, setError] = useState(null);
 
-  const recognitionRef = useRef(null);
-  const finalRef = useRef("");   // accumulates the whole session
+  const recorderRef = useRef(null);
   const timerRef = useRef(null);
   const onFinishRef = useRef(onFinish);
   onFinishRef.current = onFinish;
 
-  const SpeechRecognition =
-    typeof window !== "undefined" &&
-    (window.SpeechRecognition || window.webkitSpeechRecognition);
-  const supported = Boolean(SpeechRecognition);
+  useEffect(() => () => clearInterval(timerRef.current), []);
 
-  useEffect(() => {
-    if (!supported) return;
-
-    const recognition = new SpeechRecognition();
-    recognition.lang = lang;
-    recognition.continuous = true;      // keep listening across pauses
-    recognition.interimResults = true;  // stream partial words live
-
-    recognition.onstart = () => {
-      setListening(true);
-      setError(null);
-    };
-
-    recognition.onresult = (event) => {
-      let interimText = "";
-
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const result = event.results[i];
-        if (result.isFinal) {
-          finalRef.current += result[0].transcript.trim() + " ";
-        } else {
-          interimText += result[0].transcript;
-        }
-      }
-
-      setFinalText(finalRef.current);
-      setInterim(interimText);
-
-      // Restart the silence timer every time we hear something
-      clearTimeout(timerRef.current);
-      timerRef.current = setTimeout(() => recognition.stop(), silenceMs);
-    };
-
-    recognition.onerror = (event) => {
-      if (event.error !== "no-speech" && event.error !== "aborted") {
-        setError(event.error);
-      }
-    };
-
-    recognition.onend = () => {
-      clearTimeout(timerRef.current);
-      setListening(false);
-      setInterim("");
-
-      const full = finalRef.current.trim();
-      if (full) onFinishRef.current?.(full);
-    };
-
-    recognitionRef.current = recognition;
-
-    return () => {
-      clearTimeout(timerRef.current);
-      recognition.abort();
-    };
-  }, [SpeechRecognition, supported, lang, silenceMs]);
-
-  const start = useCallback(() => {
-    if (!recognitionRef.current) return;
-    finalRef.current = "";
+  const start = useCallback(async () => {
     setFinalText("");
-    setInterim("");
+    setError(null);
+
+    let stream;
     try {
-      recognitionRef.current.start();
-    } catch {
-      // already started; ignore
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) {
+      setError(e.name);
+      return;
     }
-  }, []);
+
+    const recorder = new MediaRecorder(stream);
+    const chunks = [];
+    recorderRef.current = recorder;
+    let heardSpeech = false;
+    let lastSound = Date.now();
+    const startedAt = Date.now();
+
+    const ctx = new AudioContext();
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 1024;
+    ctx.createMediaStreamSource(stream).connect(analyser);
+    const samples = new Uint8Array(analyser.fftSize);
+
+    timerRef.current = setInterval(() => {
+      analyser.getByteTimeDomainData(samples);
+      let sum = 0;
+      for (const s of samples) sum += ((s - 128) / 128) ** 2;
+      const rms = Math.sqrt(sum / samples.length);
+
+      if (rms > silenceThreshold) {
+        heardSpeech = true;
+        lastSound = Date.now();
+      }
+      const silentTooLong = heardSpeech && Date.now() - lastSound > silenceMs;
+      const gaveUp = !heardSpeech && Date.now() - startedAt > silenceMs + 4000;
+      if ((silentTooLong || gaveUp) && recorder.state === "recording") {
+        recorder.stop();
+      }
+    }, 100);
+
+    recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+
+    recorder.onstop = async () => {
+      clearInterval(timerRef.current);
+      stream.getTracks().forEach((t) => t.stop()); // release the mic
+      ctx.close();
+      setListening(false);
+
+      if (!heardSpeech) return; // don't pay to transcribe silence
+
+      setTranscribing(true);
+      try {
+        const form = new FormData();
+        form.append("audio", new Blob(chunks, { type: recorder.mimeType }));
+        const r = await fetch("/api/stt", { method: "POST", body: form });
+        if (!r.ok) throw new Error("Transcription failed");
+        const { text } = await r.json();
+        setFinalText(text);
+        if (text) onFinishRef.current?.(text);
+      } catch (e) {
+        setError(e.message);
+      } finally {
+        setTranscribing(false);
+      }
+    };
+
+    recorder.start();
+    setListening(true);
+  }, [silenceMs, silenceThreshold]);
 
   const stop = useCallback(() => {
-    recognitionRef.current?.stop(); // triggers onend, which fires onFinish
+    if (recorderRef.current?.state === "recording") recorderRef.current.stop();
   }, []);
 
-  return { start, stop, listening, finalText, interim, error, supported };
+  return {
+    start, stop, listening, transcribing,
+    finalText, interim: "", error, supported: true,
+  };
 }

@@ -1,50 +1,88 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 
 export function useSpeech() {
-  const [voices, setVoices] = useState([]);
   const [speaking, setSpeaking] = useState(false);
-  const supported = typeof window !== "undefined" && "speechSynthesis" in window;
-  const utteranceRef = useRef(null); // prevents garbage collection bug in some browsers
+  const levelRef = useRef(0); // 0..1 real volume, for the wave
 
-  // Voices load asynchronously, so listen for them
-  useEffect(() => {
-    if (!supported) return;
-
-    const loadVoices = () => setVoices(window.speechSynthesis.getVoices());
-    loadVoices();
-    window.speechSynthesis.addEventListener("voiceschanged", loadVoices);
-
-    return () => {
-      window.speechSynthesis.removeEventListener("voiceschanged", loadVoices);
-      window.speechSynthesis.cancel(); // stop speech on unmount
-    };
-  }, [supported]);
-
-  const speak = useCallback(
-    (text, { voice, rate = 1, pitch = 1, volume = 1 } = {}) => {
-      if (!supported || !text) return;
-
-      const utterance = new SpeechSynthesisUtterance(text);
-      if (voice) utterance.voice = voice;
-      utterance.rate = rate;     // 0.1 to 10
-      utterance.pitch = pitch;   // 0 to 2
-      utterance.volume = volume; // 0 to 1
-
-      utterance.onstart = () => setSpeaking(true);
-      utterance.onend = () => setSpeaking(false);
-      utterance.onerror = () => setSpeaking(false);
-
-      utteranceRef.current = utterance;
-      window.speechSynthesis.speak(utterance);
-    },
-    [supported]
-  );
+  const audioRef = useRef(null);
+  const queueRef = useRef(Promise.resolve());
+  const abortRef = useRef(new AbortController());
+  const pendingRef = useRef(0);
+  const ctxRef = useRef(null);
+  const analyserRef = useRef(null);
+  const rafRef = useRef(null);
 
   const stop = useCallback(() => {
-    if (!supported) return;
-    window.speechSynthesis.cancel();
+    abortRef.current.abort();              // cancel in-flight TTS requests
+    abortRef.current = new AbortController();
+    audioRef.current?.pause();
+    audioRef.current = null;
+    pendingRef.current = 0;
+    queueRef.current = Promise.resolve();
     setSpeaking(false);
-  }, [supported]);
+  }, []);
 
-  return { speak, stop, speaking, voices, supported };
+  useEffect(() => stop, [stop]);
+
+  const playBlob = (blob) =>
+    new Promise((resolve) => {
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      audioRef.current = audio;
+
+      // Real-volume analysis for the visualizer
+      ctxRef.current ??= new AudioContext();
+      const ctx = ctxRef.current;
+      const source = ctx.createMediaElementSource(audio);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+      analyser.connect(ctx.destination);
+      analyserRef.current = analyser;
+
+      const data = new Uint8Array(analyser.frequencyBinCount);
+      const tick = () => {
+        analyser.getByteFrequencyData(data);
+        levelRef.current = data.reduce((a, b) => a + b, 0) / data.length / 255;
+        rafRef.current = requestAnimationFrame(tick);
+      };
+
+      const done = () => {
+        cancelAnimationFrame(rafRef.current);
+        levelRef.current = 0;
+        URL.revokeObjectURL(url);
+        resolve();
+      };
+      audio.onended = done;
+      audio.onerror = done;
+      audio.onpause = done; // fires on stop()
+
+      ctx.resume().then(() => audio.play().then(tick).catch(done));
+    });
+
+  const speak = useCallback((text) => {
+    if (!text?.trim()) return;
+    const { signal } = abortRef.current;
+    pendingRef.current += 1;
+    setSpeaking(true);
+
+    // Fetch immediately (so the next sentence is ready), but play in order
+    const audioPromise = fetch("/api/tts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+      signal,
+    })
+      .then((r) => (r.ok ? r.blob() : Promise.reject(new Error("TTS failed"))))
+      .catch(() => null);
+
+    queueRef.current = queueRef.current.then(async () => {
+      const blob = await audioPromise;
+      if (blob && !signal.aborted) await playBlob(blob);
+      pendingRef.current = Math.max(0, pendingRef.current - 1);
+      if (pendingRef.current === 0) setSpeaking(false);
+    });
+  }, []);
+
+  return { speak, stop, speaking, levelRef, supported: true, voices: [] };
 }
