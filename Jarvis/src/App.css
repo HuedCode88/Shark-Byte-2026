@@ -140,11 +140,18 @@ h2 { margin: 10px 0 8px; font: 500 clamp(30px, 5vw, 46px)/1.05 Georgia, serif; l
 @keyframes blink { 0%, 60%, 100% { opacity: .2; } 30% { opacity: 1; } }
 
 .error-message { margin: 0 48px 18px; color: #a53d42; font-size: 13px; }
-.question-form { padding: 24px clamp(20px, 5vw, 48px) 30px; border-top: 1px solid var(--line); }
-.question-form label { display: block; margin-bottom: 9px; color: var(--muted); font: 700 11px/1.2 ui-monospace, monospace; letter-spacing: .1em; text-transform: uppercase; }
-.input-row { display: flex; gap: 10px; }
-input { min-width: 0; flex: 1; padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px; background: white; color: var(--ink); font: inherit; outline: none; }
-input:focus { border-color: var(--dark-mint); box-shadow: 0 0 0 3px rgba(131, 184, 78, .16); }
+.voice-console { padding: 12px clamp(20px, 5vw, 48px) 28px; border-top: 1px solid var(--line); text-align: center; }
+.speech-wave { display: grid; min-height: 92px; place-items: center; }
+.speech-wave canvas { display: block; max-width: 100%; height: auto; }
+.voice-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 10px; }
+.voice-actions button { min-height: 46px; }
+.mic-button { min-width: 180px; background: var(--ink); color: #f5faef; }
+.mic-button:hover:not(:disabled) { background: #244a46; }
+.mic-button.listening { background: var(--mint); color: var(--ink); }
+.stop-speaking-button { border: 1px solid var(--line); background: transparent; color: var(--ink); }
+.stop-speaking-button:hover:not(:disabled) { background: #edf3ee; }
+.voice-status { margin: 10px 0 0; color: var(--muted); font: 700 11px/1.4 ui-monospace, monospace; text-transform: uppercase; }
+.transcript-note { max-width: 620px; margin: 8px auto 0; color: var(--muted); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
 button { padding: 0 20px; border: 0; border-radius: 10px; background: var(--mint); color: var(--ink); font-weight: 700; cursor: pointer; }
 button:hover:not(:disabled) { background: #b7e96b; }
 button:disabled { cursor: not-allowed; opacity: .55; }
@@ -158,6 +165,7 @@ footer strong { color: var(--ink); }
   .status { display: none; }
   .message-row { max-width: 92%; }
   .message-row.research-message { max-width: 100%; }
-  .input-row { flex-direction: column; }
-  button { min-height: 48px; }
+  .error-message { margin: 0 20px 16px; }
+  .voice-console { padding-bottom: 22px; }
+  .voice-actions button { min-height: 48px; }
 }

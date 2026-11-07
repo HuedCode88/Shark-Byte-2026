@@ -4,6 +4,7 @@ export function useSpeechRecognition({
   silenceMs = 2000,
   silenceThreshold = 0.015, // tune for your mic
   onFinish,
+  levelRef,
 } = {}) {
   const [listening, setListening] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
@@ -13,7 +14,10 @@ export function useSpeechRecognition({
   const recorderRef = useRef(null);
   const timerRef = useRef(null);
   const onFinishRef = useRef(onFinish);
-  onFinishRef.current = onFinish;
+
+  useEffect(() => {
+    onFinishRef.current = onFinish;
+  }, [onFinish]);
 
   useEffect(() => () => clearInterval(timerRef.current), []);
 
@@ -47,6 +51,7 @@ export function useSpeechRecognition({
       let sum = 0;
       for (const s of samples) sum += ((s - 128) / 128) ** 2;
       const rms = Math.sqrt(sum / samples.length);
+      if (levelRef) levelRef.current = Math.min(1, rms * 8);
 
       if (rms > silenceThreshold) {
         heardSpeech = true;
@@ -63,6 +68,7 @@ export function useSpeechRecognition({
 
     recorder.onstop = async () => {
       clearInterval(timerRef.current);
+      if (levelRef) levelRef.current = 0;
       stream.getTracks().forEach((t) => t.stop()); // release the mic
       ctx.close();
       setListening(false);
@@ -87,7 +93,7 @@ export function useSpeechRecognition({
 
     recorder.start();
     setListening(true);
-  }, [silenceMs, silenceThreshold]);
+  }, [silenceMs, silenceThreshold, levelRef]);
 
   const stop = useCallback(() => {
     if (recorderRef.current?.state === "recording") recorderRef.current.stop();
