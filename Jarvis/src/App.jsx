@@ -1,6 +1,48 @@
 import { useState } from 'react'
 import './App.css'
 
+function DocumentAttachment({ document }) {
+  if (document.status === 'pending') {
+    return <div className="document-card pending">Preparing your document preview...</div>
+  }
+
+  if (document.status === 'failed') {
+    return <div className="document-card document-error">{document.error}</div>
+  }
+
+  return (
+    <section className="document-card" aria-label="Generated document">
+      <div className="document-header">
+        <div>
+          <span className="document-label">DOCUMENT READY</span>
+          <h3>{document.title}</h3>
+        </div>
+        <span className="document-status">Preview</span>
+      </div>
+      {document.html && (
+        <iframe
+          className="document-preview"
+          title={`${document.title} preview`}
+          srcDoc={document.html}
+          sandbox=""
+        />
+      )}
+      <div className="document-actions">
+        {(document.formats || ['html', 'md', 'pdf', 'docx']).map((format) => (
+          <a
+            className={`download-button ${format === 'pdf' ? 'primary' : ''}`}
+            href={`/api/documents/${document.id}/export?format=${format}`}
+            download
+            key={format}
+          >
+            Download {format.toUpperCase()}
+          </a>
+        ))}
+      </div>
+    </section>
+  )
+}
+
 function App() {
   const [question, setQuestion] = useState('')
   const [messages, setMessages] = useState([])
@@ -53,7 +95,9 @@ function App() {
     }
 
     async function waitForThinker(jobId) {
-      for (let attempt = 0; attempt < 60; attempt += 1) {
+      let responseAdded = false
+
+      for (let attempt = 0; attempt < 120; attempt += 1) {
         await new Promise((resolve) => setTimeout(resolve, 250))
         const response = await fetch(`/api/chat/${jobId}`)
         const job = await response.json()
@@ -61,8 +105,21 @@ function App() {
         if (!response.ok) throw new Error(job.error || 'The chat job could not be found.')
 
         if (job.status === 'complete') {
-          setMessages((current) => [...current, { role: 'assistant', text: job.output }])
-          return
+          if (!responseAdded) {
+            setMessages((current) => [
+              ...current,
+              { role: 'assistant', text: job.output, document: job.document },
+            ])
+            responseAdded = true
+          } else if (job.document?.status === 'ready' || job.document?.status === 'failed') {
+            setMessages((current) => current.map((message) => (
+              message.document && message.document.status === 'pending'
+                ? { ...message, document: job.document }
+                : message
+            )))
+          }
+
+          if (!job.document || job.document.status === 'ready' || job.document.status === 'failed') return
         }
 
         if (job.status === 'failed') throw new Error(job.error)
@@ -101,6 +158,7 @@ function App() {
             <div className={`message-row ${message.role}`} key={`${message.role}-${index}`}>
               <span className="message-label">{message.role === 'user' ? 'You' : 'Swarm'}</span>
               <p>{message.text}</p>
+              {message.document && <DocumentAttachment document={message.document} />}
             </div>
           ))}
           {isLoading && (

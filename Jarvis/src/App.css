@@ -94,6 +94,19 @@ h2 { margin: 10px 0 8px; font: 500 clamp(30px, 5vw, 46px)/1.05 Georgia, serif; l
 .message-label { display: block; margin-bottom: 5px; color: var(--dark-mint); font: 700 11px/1.2 ui-monospace, monospace; text-transform: uppercase; letter-spacing: .1em; }
 .message-row p { margin: 0; padding: 13px 16px; border-radius: 14px; background: #edf3ee; text-align: left; font-size: 15px; white-space: pre-wrap; }
 .message-row.user p { background: var(--ink); color: #f5faef; }
+.document-card { margin-top: 12px; padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: #fff; text-align: left; }
+.document-card.pending { color: var(--muted); font-size: 13px; }
+.document-error { color: #a53d42; font-size: 13px; }
+.document-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.document-label { color: var(--dark-mint); font: 700 10px/1.2 ui-monospace, monospace; letter-spacing: .1em; }
+.document-header h3 { margin: 5px 0 0; color: var(--ink); font: 500 20px/1.15 Georgia, serif; }
+.document-status { color: var(--muted); font-size: 12px; }
+.document-preview { display: block; width: 100%; height: 280px; border: 1px solid var(--line); border-radius: 8px; background: white; }
+.document-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.download-button { padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px; color: var(--ink); background: var(--paper); font-size: 12px; font-weight: 700; text-decoration: none; }
+.download-button:hover { border-color: var(--dark-mint); background: #f0f8e5; }
+.download-button.primary { border-color: var(--ink); background: var(--ink); color: white; }
+.download-button.primary:hover { background: #244a46; }
 .loading span { animation: blink 1s infinite; }
 .loading span:nth-child(2) { animation-delay: .2s; }
 .loading span:nth-child(3) { animation-delay: .4s; }
