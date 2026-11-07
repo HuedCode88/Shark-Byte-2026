@@ -41,15 +41,34 @@ function App() {
         throw new Error(errorMessage)
       }
 
-      if (typeof data.output !== 'string' || !data.output) {
-        throw new Error('The swarm returned no text response.')
+      if (data.jobId) {
+        await waitForThinker(data.jobId)
+      } else {
+        throw new Error('The server did not create a chat job.')
       }
-
-      setMessages((current) => [...current, { role: 'assistant', text: data.output }])
     } catch (requestError) {
       setError(requestError.message)
     } finally {
       setIsLoading(false)
+    }
+
+    async function waitForThinker(jobId) {
+      for (let attempt = 0; attempt < 60; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 250))
+        const response = await fetch(`/api/chat/${jobId}`)
+        const job = await response.json()
+
+        if (!response.ok) throw new Error(job.error || 'The chat job could not be found.')
+
+        if (job.status === 'complete') {
+          setMessages((current) => [...current, { role: 'assistant', text: job.output }])
+          return
+        }
+
+        if (job.status === 'failed') throw new Error(job.error)
+      }
+
+      throw new Error('The slow layer took too long to respond.')
     }
   }
 
@@ -106,7 +125,7 @@ function App() {
               maxLength={2000}
             />
             <button type="submit" disabled={!question.trim() || isLoading}>
-              {isLoading ? 'Sending...' : 'Send'}
+              {isLoading ? 'Thinking...' : 'Send'}
               {!isLoading && <span aria-hidden="true">→</span>}
             </button>
           </div>
