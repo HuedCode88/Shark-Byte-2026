@@ -362,12 +362,50 @@ function CalendarEventDetails({ event, onDelete, deletingEventId }) {
   )
 }
 
+function NoteResults({ noteResult, onDelete, deletingNoteId }) {
+  const notes = Array.isArray(noteResult.notes) ? noteResult.notes : []
+
+  return (
+    <section className="note-results" aria-label="Saved notes">
+      <header className="note-results-header">
+        <span className="research-label">NOTES</span>
+        <h3>{noteResult.summary}</h3>
+      </header>
+      {notes.length > 0 ? (
+        <div className="saved-notes-list">
+          {notes.map((note) => (
+            <article className="saved-note" key={note.id}>
+              <p>{note.text}</p>
+              <div className="saved-note-footer">
+                <time dateTime={note.createdAt}>{new Date(note.createdAt).toLocaleString()}</time>
+                {onDelete && (
+                  <button
+                    className="note-remove-button"
+                    type="button"
+                    onClick={() => onDelete(note.id)}
+                    disabled={deletingNoteId === note.id}
+                  >
+                    {deletingNoteId === note.id ? 'Removing…' : 'Remove'}
+                  </button>
+                )}
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : noteResult.action === 'list' ? (
+        <p className="notes-empty-state">Your saved notes will appear here.</p>
+      ) : null}
+    </section>
+  )
+}
+
 export default function App() {
   const [messages, setMessages] = useState([])
   const [isLoading, setIsLoading] = useState(false)
   const [loadingText, setLoadingText] = useState('Thinking')
   const [error, setError] = useState('')
   const [deletingEventId, setDeletingEventId] = useState('')
+  const [deletingNoteId, setDeletingNoteId] = useState('')
   const [conversationActive, setConversationActive] = useState(false)
   const conversationActiveRef = useRef(false)
   const resumeTimeoutRef = useRef(null)
@@ -543,6 +581,31 @@ export default function App() {
     }
   }
 
+  async function removeNote(noteId) {
+    setDeletingNoteId(noteId)
+    setError('')
+    try {
+      const response = await fetch(`/api/notes/${encodeURIComponent(noteId)}`, { method: 'DELETE' })
+      const result = await response.json()
+      if (!response.ok) throw new Error(result.error || 'The note could not be removed.')
+      setMessages((current) => current.map((message) => message.noteResult
+        ? {
+            ...message,
+            text: 'Removed that note.',
+            noteResult: {
+              action: 'list',
+              summary: 'Removed that note.',
+              notes: result.notes,
+            },
+          }
+        : message))
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'The note could not be removed.')
+    } finally {
+      setDeletingNoteId('')
+    }
+  }
+
   async function sendQuestion(prompt) {
     const trimmedQuestion = prompt.trim()
 
@@ -595,11 +658,13 @@ export default function App() {
       const researching = mode === 'research' || mode === 'research_document' || mode === 'research_spreadsheet'
       const jobSearching = mode === 'job_search'
       const managingCalendar = mode === 'calendar'
+      const managingNotes = mode === 'notes'
       const maxAttempts = researching || jobSearching ? 480 : 120
       const pollInterval = researching || jobSearching ? 500 : 150
       if (researching) setLoadingText('Searching the web')
       if (jobSearching) setLoadingText('Searching current job listings')
       if (managingCalendar) setLoadingText('Updating your calendar')
+      if (managingNotes) setLoadingText('Saving your note')
 
       for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
         await new Promise((resolve) => setTimeout(resolve, pollInterval))
@@ -609,6 +674,18 @@ export default function App() {
         if (!response.ok) throw new Error(job.error || 'The chat job could not be found.')
 
         if (job.status === 'complete') {
+          if (job.noteResult) {
+            setMessages((current) => [...current, {
+              role: 'assistant',
+              text: job.noteResult.summary,
+              noteResult: job.noteResult,
+              jobId,
+            }])
+            responseAdded = true
+            if (job.noteResult.summary) await speak(job.noteResult.summary)
+            return
+          }
+
           if (job.calendar) {
             setMessages((current) => [...current, {
               role: 'assistant',
@@ -704,6 +781,7 @@ export default function App() {
         if (job.status === 'researching') setLoadingText('Searching and reading sources')
         if (job.status === 'searching_jobs') setLoadingText('Searching current job listings')
         if (job.status === 'managing_calendar') setLoadingText('Updating your calendar')
+        if (job.status === 'saving_note') setLoadingText('Saving your note')
         if (job.status === 'failed') throw new Error(job.error)
       }
 
@@ -748,13 +826,15 @@ export default function App() {
           )}
           {messages.map((message, index) => (
             <div
-              className={`message-row ${message.role}${message.research ? ' research-message' : ''}${message.calendar ? ' calendar-message' : ''}`}
+              className={`message-row ${message.role}${message.research ? ' research-message' : ''}${message.calendar ? ' calendar-message' : ''}${message.noteResult ? ' note-message' : ''}`}
               key={`${message.role}-${index}`}
             >
               <span className="message-label">
-                {message.calendar ? 'Calendar' : message.jobSearch ? 'Jobs' : message.research ? 'Research' : 'Jarvis'}
+                {message.noteResult ? 'Notes' : message.calendar ? 'Calendar' : message.jobSearch ? 'Jobs' : message.research ? 'Research' : 'Jarvis'}
               </span>
-              {message.calendar
+              {message.noteResult
+                ? <NoteResults noteResult={message.noteResult} onDelete={removeNote} deletingNoteId={deletingNoteId} />
+                : message.calendar
                 ? <CalendarEvents calendar={message.calendar} onDelete={removeCalendarEvent} deletingEventId={deletingEventId} />
                 : message.jobSearch
                 ? <JobSearchResults result={message.jobSearch} />

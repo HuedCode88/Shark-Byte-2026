@@ -33,12 +33,16 @@ import {
 
 const port = Number(process.env.PORT || 3001)
 const calendarFilePath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'data', 'calendar.json')
+const notesFilePath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'data', 'notes.json')
 const swarmsUrl = 'https://api.swarms.world/v1/swarm/completions'
 const jobs = new Map()
 const memories = []
 let calendarEventsCache = null
 let calendarLoadPromise = null
 let calendarWriteQueue = Promise.resolve()
+let notesCache = null
+let notesLoadPromise = null
+let notesWriteQueue = Promise.resolve()
 let latestDocumentId = null
 let latestSpreadsheetId = null
 let latestArtifact = null
@@ -46,6 +50,7 @@ let latestConversation = null
 let latestConversationKind = null
 let latestJobSearch = null
 let pendingCalendarAction = null
+let pendingNoteAction = false
 let latestRequestSequence = 0
 const maxMemoryEntries = 20
 const maxJobEntries = 100
@@ -190,6 +195,56 @@ function updateCalendarEvents(update) {
     console.error('Calendar storage failed:', error)
   })
   return operation
+}
+
+async function getNotes() {
+  if (notesCache) return notesCache
+  if (!notesLoadPromise) {
+    notesLoadPromise = readFile(notesFilePath, 'utf8')
+      .then((contents) => {
+        const parsed = JSON.parse(contents)
+        notesCache = Array.isArray(parsed) ? parsed : []
+        return notesCache
+      })
+      .catch((error) => {
+        if (error.code !== 'ENOENT') throw error
+        notesCache = []
+        return notesCache
+      })
+  }
+  return notesLoadPromise
+}
+
+async function listNotes() {
+  await notesWriteQueue
+  return getNotes()
+}
+
+function updateNotes(update) {
+  const operation = notesWriteQueue.then(async () => {
+    const currentNotes = await getNotes()
+    const nextNotes = await update([...currentNotes])
+    await mkdir(path.dirname(notesFilePath), { recursive: true })
+    const temporaryPath = `${notesFilePath}.${randomUUID()}.tmp`
+    await writeFile(temporaryPath, `${JSON.stringify(nextNotes, null, 2)}\n`, 'utf8')
+    await rename(temporaryPath, notesFilePath)
+    notesCache = nextNotes
+    notesLoadPromise = Promise.resolve(nextNotes)
+    return nextNotes
+  })
+  notesWriteQueue = operation.catch((error) => {
+    console.error('Note storage failed:', error)
+  })
+  return operation
+}
+
+async function deleteNote(noteId) {
+  let deletedNote = null
+  await updateNotes((notes) => {
+    deletedNote = notes.find((note) => note.id === noteId) || null
+    return notes.filter((note) => note.id !== noteId)
+  })
+  return deletedNote
 }
 
 function isValidCalendarDate(value) {
@@ -485,6 +540,37 @@ function isCalendarDeleteRequest(question, previousKind = null) {
 function isCalendarOverviewRequest(question) {
   return /\b(?:show|open|view|display|pull up|bring up)\b.{0,60}\b(?:my\s+)?(?:calendar|schedule|agenda)\b/i.test(question)
     || /\b(?:calendar|schedule|agenda)\b.{0,60}\b(?:show|open|view|display)\b/i.test(question)
+}
+
+function isNoteSaveRequest(question) {
+  return /\b(?:take|make|write|jot|save|record)\b.{0,35}\b(?:a\s+)?note\b/i.test(question)
+    || /\b(?:write|jot)\s+(?:this|that)\s+down\b/i.test(question)
+    || /\bnote\s+that\b/i.test(question)
+}
+
+function isNoteListRequest(question) {
+  return /\b(?:show|list|read|view|open|pull up|what are)\b.{0,50}\b(?:my\s+)?notes?\b/i.test(question)
+    || /\bwhat\s+(?:did|have)\s+i\s+(?:ask you to )?note\b/i.test(question)
+}
+
+function isNoteDeleteRequest(question) {
+  return /\b(?:remove|delete|forget|erase)\b.{0,40}\bnotes?\b/i.test(question)
+}
+
+function isNoteRequest(question) {
+  if (isNoteSaveRequest(question) || isNoteListRequest(question) || isNoteDeleteRequest(question)) return true
+  if (!pendingNoteAction) return false
+  if (isJobSearchRequest(question) || isCalendarRequest(question, latestConversationKind)
+    || wantsSpreadsheet(question) || isProgrammingRequest(question)) return false
+  return true
+}
+
+function extractNoteText(question) {
+  return question
+    .replace(/^(?:(?:hey|okay|please|can you|could you)\s+)*(?:(?:take|make|write|jot|save|record)\s+(?:a\s+)?note(?:\s+(?:that|of|to myself))?|(?:write|jot)\s+(?:this|that)\s+down|note\s+that)\s*[:,-]?\s*/i, '')
+    .replace(/^about\s+/i, '')
+    .trim()
+    .slice(0, 4000)
 }
 
 function conversationKindForIntent(intent) {
@@ -2114,6 +2200,78 @@ Evidence:\n${evidence}`,
   }
 }
 
+async function runNoteManager(jobId, question) {
+  try {
+    let notes = await listNotes()
+    let action
+    let note = null
+    let summary
+
+    if (/\b(?:cancel|never mind|forget it|stop)\b/i.test(question) && pendingNoteAction) {
+      pendingNoteAction = false
+      action = 'cancelled'
+      summary = 'Okay, I will not save a note.'
+    } else if (isNoteListRequest(question)) {
+      pendingNoteAction = false
+      action = 'list'
+      notes = [...notes].sort((left, right) => right.createdAt.localeCompare(left.createdAt)).slice(0, 100)
+      summary = notes.length
+        ? `You have ${notes.length} saved note${notes.length === 1 ? '' : 's'}.`
+        : 'You do not have any saved notes yet.'
+    } else if (isNoteDeleteRequest(question)) {
+      pendingNoteAction = false
+      const target = question
+        .replace(/^(?:please\s+)?(?:remove|delete|forget|erase)\s+(?:(?:the|my)\s+)?(?:note\s+)?(?:about\s+)?/i, '')
+        .replace(/\s+from\s+(?:my\s+)?notes?\s*$/i, '')
+        .trim()
+      const targetWords = target.toLowerCase().replace(/[^a-z0-9]+/g, ' ').split(/\s+/).filter((word) => word.length > 1)
+      const matches = targetWords.length
+        ? notes.filter((savedNote) => {
+            const text = savedNote.text.toLowerCase().replace(/[^a-z0-9]+/g, ' ')
+            return targetWords.every((word) => text.includes(word))
+          })
+        : []
+      action = matches.length === 1 ? 'delete' : 'clarify'
+      if (matches.length === 1) {
+        const deletedNote = await deleteNote(matches[0].id)
+        notes = await listNotes()
+        summary = 'Removed that note.'
+        note = deletedNote
+      } else {
+        summary = matches.length > 1
+          ? 'I found more than one matching note. Please be more specific.'
+          : 'I could not find a matching note. Here are your saved notes.'
+      }
+    } else {
+      const text = pendingNoteAction ? question.trim() : extractNoteText(question)
+      if (!text) {
+        pendingNoteAction = true
+        action = 'clarify'
+        summary = 'What would you like me to write down?'
+      } else {
+        note = { id: randomUUID(), text: text.slice(0, 4000), createdAt: new Date().toISOString() }
+        notes = await updateNotes((currentNotes) => [...currentNotes, note])
+        pendingNoteAction = false
+        action = 'create'
+        summary = 'Saved your note.'
+        notes = [note]
+      }
+    }
+
+    latestConversation = { question, response: summary }
+    latestConversationKind = 'note'
+    updateJob(jobId, {
+      status: 'complete',
+      output: summary,
+      noteResult: { action, summary, note, notes },
+    })
+  } catch (error) {
+    console.error('Note manager failed:', error)
+    const message = error instanceof Error ? error.message : 'Unknown note failure.'
+    updateJob(jobId, { status: 'failed', error: `The note request failed: ${message}` })
+  }
+}
+
 async function runCalendarLister(jobId, question, requestedTimeZone) {
   try {
     const timeZone = normalizeTimeZone(requestedTimeZone)
@@ -2483,17 +2641,18 @@ async function handleChat(request, response) {
   }
 
   const trimmedQuestion = question.trim()
-  const calendarRequest = isCalendarRequest(trimmedQuestion, latestConversationKind)
+  const noteRequest = isNoteRequest(trimmedQuestion)
+  const calendarRequest = !noteRequest && isCalendarRequest(trimmedQuestion, latestConversationKind)
   const localCalendarRequest = calendarRequest
     && (isCalendarOverviewRequest(trimmedQuestion) || isCalendarDeleteRequest(trimmedQuestion, latestConversationKind))
-  if (!process.env.SWARMS_API_KEY && !localCalendarRequest) {
+  if (!process.env.SWARMS_API_KEY && !localCalendarRequest && !noteRequest) {
     sendJson(response, 500, { error: 'SWARMS_API_KEY is not configured on the server.' })
     return
   }
 
   const emotion = readEmotion(trimmedQuestion)
   const recalledMemories = retrieveMemories()
-  const jobSearchRequest = isJobSearchRequest(trimmedQuestion)
+  const jobSearchRequest = !noteRequest && isJobSearchRequest(trimmedQuestion)
   const jobSearchQuery = jobSearchRequest ? getJobSearchQuery(trimmedQuestion) : trimmedQuestion
   const directProgrammingRequest = isProgrammingRequest(trimmedQuestion)
     && !wantsDocument(trimmedQuestion)
@@ -2512,8 +2671,10 @@ async function handleChat(request, response) {
     conversationContext.latestConversation,
     conversationContext.latestConversationKind,
   )
-  const interpretation = jobSearchRequest
-    ? { intent: 'job_search', task: trimmedQuestion }
+  const interpretation = noteRequest
+    ? { intent: 'note', task: trimmedQuestion }
+    : jobSearchRequest
+      ? { intent: 'job_search', task: trimmedQuestion }
     : calendarRequest
       ? { intent: 'calendar', task: trimmedQuestion }
     : directProgrammingRequest
@@ -2568,6 +2729,8 @@ async function handleChat(request, response) {
   const deliverable = researchDocument ? 'document' : researchSpreadsheet ? 'spreadsheet' : null
   const mode = jobSearchRequest
     ? 'job_search'
+    : noteRequest
+      ? 'notes'
     : calendarRequest
       ? 'calendar'
     : researchDocument
@@ -2581,6 +2744,8 @@ async function handleChat(request, response) {
           : 'chat'
   const status = jobSearchRequest
     ? 'searching_jobs'
+    : noteRequest
+      ? 'saving_note'
     : calendarRequest ? 'managing_calendar' : researching ? 'researching' : 'thinking'
   updateJob(jobId, {
     status,
@@ -2595,7 +2760,9 @@ async function handleChat(request, response) {
     layer: 'fast',
     roles: fastAgents,
   })
-  if (jobSearchRequest) {
+  if (noteRequest) {
+    void runNoteManager(jobId, trimmedQuestion)
+  } else if (jobSearchRequest) {
     void runJobSearcher(jobId, jobSearchQuery)
   } else if (calendarRequest) {
     if (isCalendarOverviewRequest(trimmedQuestion)) {
@@ -2657,7 +2824,7 @@ async function handleChat(request, response) {
     }
     void runThinker(jobId, trimmedQuestion, emotion, recalledMemories, interpretation)
   }
-  if (!jobSearchRequest && !calendarRequest) void runMemoryKeeper(trimmedQuestion, recalledMemories)
+  if (!jobSearchRequest && !calendarRequest && !noteRequest) void runMemoryKeeper(trimmedQuestion, recalledMemories)
 }
 
 const server = createServer(async (request, response) => {
@@ -2699,6 +2866,26 @@ const server = createServer(async (request, response) => {
 
   if (request.method === 'GET' && request.url === '/api/calendar') {
     sendJson(response, 200, { events: await listCalendarEvents() })
+    return
+  }
+
+  if (request.method === 'GET' && request.url === '/api/notes') {
+    sendJson(response, 200, { notes: await listNotes() })
+    return
+  }
+
+  if (request.method === 'DELETE' && request.url.startsWith('/api/notes/')) {
+    const noteId = decodeURIComponent(request.url.slice('/api/notes/'.length))
+    if (!noteId || noteId.includes('/')) {
+      sendJson(response, 404, { error: 'Note not found.' })
+      return
+    }
+    const deletedNote = await deleteNote(noteId)
+    if (!deletedNote) {
+      sendJson(response, 404, { error: 'Note not found.' })
+      return
+    }
+    sendJson(response, 200, { note: deletedNote, notes: await listNotes() })
     return
   }
 
