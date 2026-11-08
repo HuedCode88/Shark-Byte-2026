@@ -175,12 +175,13 @@ function wantsWebResearch(question) {
 
 function wantsSpreadsheetResearch(question) {
   const hasHistoricalRange = /\b(?:19|20)\d{2}\s*(?:[-\u2013\u2014]|to|through)\s*(?:19|20)\d{2}\b/i.test(question)
+  const hasRelativeTimeScope = /\b(?:last|past|previous)\s+(?:calendar\s+)?(?:day|week|month|quarter|year|\d+\s+days?)\b/i.test(question)
   const hasDataSubject = /\b(sales|prices?|revenue|income|costs?|market|statistics|data|trends?|rates?|production|exports?|imports?)\b/i.test(question)
   const hasRelationalDataRequest = isRelationalAnalysisRequest(question)
   const hasMarketDataSubject = /\b(stock|stocks|share prices?|ticker|tickers|equities|invest(?:ing|ment)|portfolio|securities|dividend|market cap)\b/i.test(question)
   const asksForSources = /\b(?:research|source|sources|citation|citations|verify|verified)\b/i.test(question)
     && !/\bsource\s+column\b/i.test(question)
-  return (hasHistoricalRange && (hasDataSubject || hasMarketDataSubject))
+  return ((hasHistoricalRange || hasRelativeTimeScope) && (hasDataSubject || hasMarketDataSubject))
     || hasMarketDataSubject
     || (hasDataSubject && (hasRelationalDataRequest || /\b(?:rates?|statistics|data)\b/i.test(question)))
     || asksForSources
@@ -542,8 +543,7 @@ User message:
         model_name: configuredModel('ORCHESTRATOR_MODEL', fallbackModels.orchestrator),
       }],
     )
-    const plan = parseOrchestratorPlan(getOutput(result), question)
-    return plan
+    return parseOrchestratorPlan(getOutput(result), question)
   } catch (error) {
     console.error('Conversation orchestrator failed; using deterministic routing:', error)
     return fallback
@@ -2113,6 +2113,7 @@ async function handleChat(request, response) {
     && interpretation.intent === 'edit_spreadsheet',
   )
   const researchSpreadsheet = interpretation.intent === 'research_spreadsheet'
+    || (interpretation.intent === 'create_spreadsheet' && requiresResearchBackedSpreadsheet(trimmedQuestion))
     || (interpretation.intent === 'edit_spreadsheet' && !existingSpreadsheetHasData)
   const reusablePremadeList = getReusablePremadeList(
     trimmedQuestion,

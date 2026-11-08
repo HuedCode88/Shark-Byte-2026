@@ -1,5 +1,162 @@
 import { useState } from 'react'
-import './App.css'
+import './TextTester.css'
+
+function CodeBlock({ language, code }) {
+  const [copied, setCopied] = useState(false)
+
+  async function copyCode() {
+    try {
+      await navigator.clipboard.writeText(code)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1500)
+    } catch {
+      setCopied(false)
+    }
+  }
+
+  return (
+    <div className="code-panel">
+      <div className="code-toolbar">
+        <span>{language || 'code'}</span>
+        <button type="button" className="copy-button" onClick={copyCode}>
+          {copied ? 'Copied' : 'Copy'}
+        </button>
+      </div>
+      <pre className="code-block">
+        <code>{code}</code>
+      </pre>
+    </div>
+  )
+}
+
+function MessageContent({ text }) {
+  const parts = String(text || '').split(/(```[\w+#.-]*\s*[\s\S]*?```)/g)
+  return parts.map((part, index) => {
+    const match = part.match(/^```([\w+#.-]*)\s*([\s\S]*?)```$/)
+    if (!match) return <span key={index}>{part}</span>
+    return <CodeBlock key={index} language={match[1]} code={match[2].trim()} />
+  })
+}
+
+function DocumentAttachment({ document }) {
+  if (document.status === 'pending') {
+    return <div className="document-card pending">Preparing your document preview...</div>
+  }
+  if (document.status === 'failed') {
+    return <div className="document-card document-error">{document.error}</div>
+  }
+  return (
+    <section className="document-card" aria-label="Generated document">
+      <div className="document-header">
+        <div>
+          <span className="document-label">DOCUMENT READY</span>
+          <h3>{document.title}</h3>
+        </div>
+        <span className="document-status">Preview</span>
+      </div>
+      {document.html && (
+        <iframe
+          className="document-preview"
+          title={`${document.title} preview`}
+          srcDoc={document.html}
+          sandbox=""
+        />
+      )}
+      <div className="document-actions">
+        {(document.formats || ['html', 'md', 'pdf', 'docx']).map((format) => (
+          <a
+            className={`download-button ${format === 'pdf' ? 'primary' : ''}`}
+            href={`/api/documents/${document.id}/export?format=${format}`}
+            download
+            key={format}
+          >
+            Download {format.toUpperCase()}
+          </a>
+        ))}
+      </div>
+    </section>
+  )
+}
+
+function ResearchReport({ dossier }) {
+  const sources = Array.isArray(dossier.sources) ? dossier.sources : []
+  return (
+    <section className="research-report" aria-label="Research report">
+      <header className="research-header">
+        <span className="research-label">WEB RESEARCH</span>
+        <h3>{dossier.topic || 'Research report'}</h3>
+      </header>
+      {dossier.summary && <p className="research-summary">{dossier.summary}</p>}
+      {sources.length > 0 && (
+        <section className="research-section">
+          <h4>Sources</h4>
+          <div className="research-sources">
+            {sources.map((source, index) => (
+              <article className="research-source" key={`${source.url || source.title}-${index}`}>
+                <h5>
+                  {source.url
+                    ? <a href={source.url} target="_blank" rel="noreferrer">{source.title || source.url}</a>
+                    : source.title || `Source ${index + 1}`}
+                </h5>
+                {Array.isArray(source.key_points) && source.key_points.length > 0 && (
+                  <ul>{source.key_points.map((point, pointIndex) => <li key={pointIndex}>{point}</li>)}</ul>
+                )}
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
+    </section>
+  )
+}
+
+function SpreadsheetAttachment({ spreadsheet }) {
+  if (spreadsheet.status === 'pending') {
+    return <div className="spreadsheet-card pending">Preparing your spreadsheet preview...</div>
+  }
+  if (spreadsheet.status === 'failed') {
+    return <div className="spreadsheet-card spreadsheet-error">{spreadsheet.error}</div>
+  }
+  const formats = spreadsheet.formats || ['xlsx', 'csv']
+  return (
+    <section className="spreadsheet-card" aria-label="Generated spreadsheet">
+      <div className="document-header">
+        <div>
+          <span className="document-label">SPREADSHEET READY</span>
+          <h3>{spreadsheet.title}</h3>
+        </div>
+        <span className="document-status">
+          {spreadsheet.flaggedCells > 0 ? `${spreadsheet.flaggedCells} review flags` : 'Preview'}
+        </span>
+      </div>
+      {spreadsheet.html && (
+        <iframe
+          className="spreadsheet-preview"
+          title={`${spreadsheet.title} preview`}
+          srcDoc={spreadsheet.html}
+          sandbox=""
+        />
+      )}
+      {spreadsheet.flaggedCells > 0 && (
+        <p className="spreadsheet-warning">
+          {spreadsheet.flaggedCells} numeric values could not be located in the research findings and should be reviewed.
+        </p>
+      )}
+      <div className="document-actions">
+        {formats.map((format) => (
+          <a
+            className={`download-button ${format === 'xlsx' ? 'primary' : ''}`}
+            href={`/api/spreadsheets/${spreadsheet.id}/export?format=${format}`}
+            download
+            key={format}
+          >
+            Download {format.toUpperCase()}
+          </a>
+        ))}
+      </div>
+    </section>
+  )
+}
 
 function TextTester() {
   const [question, setQuestion] = useState('')
@@ -26,6 +183,7 @@ function TextTester() {
       const data = await response.json()
       if (!response.ok) throw new Error(data.error || 'The text tester could not start the request.')
 
+      let responseAdded = false
       for (let attempt = 0; attempt < 480; attempt += 1) {
         await new Promise((resolve) => setTimeout(resolve, 500))
         const jobResponse = await fetch(`/api/text-chat/${data.jobId}`)
@@ -34,16 +192,35 @@ function TextTester() {
         if (job.status === 'failed') throw new Error(job.error || 'The text request failed.')
         if (job.status !== 'complete') continue
 
-        setMessages((current) => [...current, {
+        const message = {
           role: 'assistant',
           text: job.output || job.dossier?.summary || 'The request completed without a text response.',
           dossier: job.dossier,
           document: job.document,
           spreadsheet: job.spreadsheet,
-        }])
-        return
+          jobId: data.jobId,
+        }
+        const documentDone = !job.document
+          || job.document.status === 'ready'
+          || job.document.status === 'failed'
+        const spreadsheetDone = !job.spreadsheet
+          || job.spreadsheet.status === 'ready'
+          || job.spreadsheet.status === 'failed'
+
+        if (!responseAdded) {
+          setMessages((current) => [...current, message])
+          responseAdded = true
+        } else if (documentDone || spreadsheetDone) {
+          setMessages((current) => current.map((currentMessage) => (
+            currentMessage.jobId === data.jobId
+              ? { ...currentMessage, ...message }
+              : currentMessage
+          )))
+        }
+
+        if (documentDone && spreadsheetDone) return
       }
-      throw new Error('The text request took too long to finish.')
+      throw new Error('The text request or artifact took too long to finish.')
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'The text request failed.')
     } finally {
@@ -52,7 +229,7 @@ function TextTester() {
   }
 
   return (
-    <main className="app-shell">
+    <main className="text-tester-shell">
       <header className="app-header">
         <div className="brand-mark" aria-hidden="true">T</div>
         <div>
@@ -78,44 +255,10 @@ function TextTester() {
           {messages.map((message, index) => (
             <div className={`message-row ${message.role}`} key={`${message.role}-${index}`}>
               <span className="message-label">{message.role === 'user' ? 'You' : 'Jarvis'}</span>
-              <p className="assistant-content">{message.text}</p>
-              {message.dossier && (
-                <section className="research-report">
-                  <h3>{message.dossier.topic || 'Research report'}</h3>
-                  <p>{message.dossier.summary}</p>
-                  <ul>
-                    {(message.dossier.sources || []).map((source, sourceIndex) => (
-                      <li key={`${source.url || source.title}-${sourceIndex}`}>
-                        <a href={source.url} target="_blank" rel="noreferrer">{source.title || source.url}</a>
-                      </li>
-                    ))}
-                  </ul>
-                </section>
-              )}
-              {message.document?.status === 'ready' && (
-                <div className="document-card">
-                  <strong>DOCUMENT READY: {message.document.title}</strong>
-                  <div className="document-actions">
-                    {(message.document.formats || ['docx']).map((format) => (
-                      <a className="download-button primary" href={`/api/documents/${message.document.id}/export?format=${format}`} download key={format}>
-                        Download {format.toUpperCase()}
-                      </a>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {message.spreadsheet?.status === 'ready' && (
-                <div className="spreadsheet-card">
-                  <strong>SPREADSHEET READY: {message.spreadsheet.title}</strong>
-                  <div className="document-actions">
-                    {(message.spreadsheet.formats || ['xlsx', 'csv']).map((format) => (
-                      <a className="download-button primary" href={`/api/spreadsheets/${message.spreadsheet.id}/export?format=${format}`} download key={format}>
-                        Download {format.toUpperCase()}
-                      </a>
-                    ))}
-                  </div>
-                </div>
-              )}
+              <div className="assistant-content"><MessageContent text={message.text} /></div>
+              {message.dossier && <ResearchReport dossier={message.dossier} />}
+              {message.document && <DocumentAttachment document={message.document} />}
+              {message.spreadsheet && <SpreadsheetAttachment spreadsheet={message.spreadsheet} />}
             </div>
           ))}
           {isLoading && (
