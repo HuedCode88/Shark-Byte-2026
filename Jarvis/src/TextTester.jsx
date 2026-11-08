@@ -98,13 +98,47 @@ function ResearchReport({ dossier }) {
                     ? <a href={source.url} target="_blank" rel="noreferrer">{source.title || source.url}</a>
                     : source.title || `Source ${index + 1}`}
                 </h5>
-                {Array.isArray(source.key_points) && source.key_points.length > 0 && (
-                  <ul>{source.key_points.map((point, pointIndex) => <li key={pointIndex}>{point}</li>)}</ul>
-                )}
+                  {source.summary && <p>{source.summary}</p>}
+                  {source.description && <p>{source.description}</p>}
+                  {Array.isArray(source.key_points) && source.key_points.length > 0 && (
+                    <ul>{source.key_points.map((point, pointIndex) => <li key={pointIndex}>{point}</li>)}</ul>
+                  )}
+                  {Array.isArray(source.findings) && source.findings.length > 0 && (
+                    <ul>{source.findings.map((finding, findingIndex) => <li key={findingIndex}>{finding}</li>)}</ul>
+                  )}
               </article>
             ))}
           </div>
         </section>
+      )}
+    </section>
+  )
+}
+
+function JobSearchResults({ result }) {
+  const jobs = Array.isArray(result.jobs) ? result.jobs : []
+  return (
+    <section className="research-report" aria-label="Job search results">
+      <header className="research-header">
+        <span className="research-label">JOB SEARCH</span>
+        <h3>{result.query || 'Current job listings'}</h3>
+      </header>
+      {jobs.length > 0 && (
+        <div className="research-sources">
+          {jobs.map((job, index) => (
+            <article className="research-source" key={`${job.url || job.title}-${index}`}>
+              <h5>
+                {job.url
+                  ? <a href={job.url} target="_blank" rel="noreferrer">{job.title || job.url}</a>
+                  : job.title || `Job ${index + 1}`}
+              </h5>
+              {(job.company || job.location || job.workMode) && (
+                <p>{[job.company, job.location, job.workMode].filter(Boolean).join(' · ')}</p>
+              )}
+              {job.description && <p>{job.description}</p>}
+            </article>
+          ))}
+        </div>
       )}
     </section>
   )
@@ -253,11 +287,15 @@ function TextTester() {
 
         const message = {
           role: 'assistant',
-          text: job.output || job.dossier?.summary || 'The request completed without a text response.',
+          text: job.output
+            || job.jobSearch?.summary
+            || job.dossier?.summary
+            || 'The request completed without a text response.',
           dossier: job.dossier,
           document: job.document,
           spreadsheet: job.spreadsheet,
           calendar: job.calendar,
+          jobSearch: job.jobSearch,
           jobId: data.jobId,
         }
         const documentDone = !job.document
@@ -317,6 +355,7 @@ function TextTester() {
               <span className="message-label">{message.role === 'user' ? 'You' : 'Jarvis'}</span>
               <div className="assistant-content"><MessageContent text={message.text} /></div>
               {message.dossier && <ResearchReport dossier={message.dossier} />}
+              {message.jobSearch && <JobSearchResults result={message.jobSearch} />}
               {message.document && <DocumentAttachment document={message.document} />}
               {message.spreadsheet && <SpreadsheetAttachment spreadsheet={message.spreadsheet} />}
               {message.calendar && <CalendarAttachment calendar={message.calendar} />}

@@ -32,6 +32,8 @@ import {
 } from './spreadsheets.js'
 import { createResolvers } from './resolvers.js'
 import { deriveArtifactFlags, normalizeArtifactIntent } from './routeGuards.js'
+import { buildObservationSheet, observationProfile } from './researchObservations.js'
+import { critiqueResearchGaps, fetchResearchEndpoints, judgeResearchSources } from './researchAgents.js'
 
 // #determ
 const port = Number(process.env.PORT || 3001)
@@ -294,7 +296,8 @@ function wantsSpreadsheetResearch(question) {
   const hasMarketDataSubject = /\b(stock|stocks|share prices?|ticker|tickers|equities|invest(?:ing|ment)|portfolio|securities|dividend|market cap)\b/i.test(question)
   const asksForSources = /\b(?:research|source|sources|citation|citations|verify|verified)\b/i.test(question)
     && !/\bsource\s+column\b/i.test(question)
-  return ((hasHistoricalRange || hasRelativeTimeScope) && (hasDataSubject || hasMarketDataSubject))
+  return hasHistoricalRange
+    || (hasRelativeTimeScope && (hasDataSubject || hasMarketDataSubject))
     || hasMarketDataSubject
     || (hasDataSubject && (hasRelationalDataRequest || /\b(?:rates?|statistics|data)\b/i.test(question)))
     || asksForSources
@@ -322,9 +325,17 @@ function isEdgeCaseResearchRequest(question) {
 
 // #determ
 function spreadsheetRequiresQuantitativeData(question) {
-  return /\b(?:price|prices|cost|costs|revenue|income|earnings|eps|p\/e|ebitda|dividend yield|market cap|valuation|return|returns|rate|rates|statistics|numeric|quantitative|amount|how much|percentage|percent|change|growth|historical|history|trend|trends|monthly|weekly|daily|annual|yearly|quarterly|correlation|correlated|relationship|associated|comparison|compared|versus|vs\.?|impact|effect|influence|connection)\b/i.test(question)
+  return /\b(?:price|prices|cost|costs|revenue|income|earnings|eps|p\/e|ebitda|dividend yield|market cap|valuation|rate|rates|statistics|numeric|quantitative|how much|how many|average|total|percentage|percent|growth|historical|trend|trends|monthly|weekly|daily|annual|yearly|quarterly|correlation|correlated|relationship|associated|comparison|compared|versus|vs\.?|impact|effect|influence|connection)\b/i.test(question)
     || /\b(?:last|past|previous)\s+(?:calendar\s+)?(?:month|week|year|quarter|\d+\s+days?)\b/i.test(question)
     || /\b(?:19|20)\d{2}\s*(?:[-\u2013\u2014]|to|through)\s*(?:19|20)\d{2}\b/i.test(question)
+}
+
+// #determ
+function researchMissingRequestedEndYear(topic, dossier) {
+  const range = String(topic || '').match(/\b((?:19|20)\d{2})\s*(?:[-\u2013\u2014]|to|through|until)\s*((?:19|20)\d{2})\b/i)
+  if (!range) return false
+  const endYear = Math.max(Number(range[1]), Number(range[2]))
+  return !researchDataProfile(dossier, topic).observedYears.includes(endYear)
 }
 
 // #determ
@@ -363,7 +374,15 @@ function remember(facts) {
 
 // #determ
 function updateJob(jobId, patch) {
-  jobs.set(jobId, { ...(jobs.get(jobId) || {}), ...patch })
+  const next = { ...(jobs.get(jobId) || {}), ...patch }
+  if (patch.status === 'failed' && /^research/.test(next.mode || '')) {
+    for (const key of ['document', 'spreadsheet']) {
+      if (next[key]?.status === 'pending') {
+        next[key] = { status: 'failed', error: patch.error || 'The request failed.' }
+      }
+    }
+  }
+  jobs.set(jobId, next)
   while (jobs.size > maxJobEntries) jobs.delete(jobs.keys().next().value)
 }
 
@@ -501,7 +520,9 @@ function getJobSearchQuery(question) {
   const priorResponse = latestConversation?.response || ''
   const recentJobContext = /\b(jobs?|careers?|roles?|positions?|openings?|vacancies|job search|job listings)\b/i
     .test(`${priorQuestion} ${priorResponse}`)
-  return recentJobContext && asksForLinks ? priorQuestion : question
+  const hasNewCriteria = /\b(?:in|near|around|at|for|with|without|remote|hybrid|on[- ]site|entry[- ]level|new\s+grad(?:uate)?s?|intern(?:ship)?s?|junior|senior|part[- ]time|full[- ]time)\b/i.test(question)
+    || /\b(?:find|search|look|help|recommend|show|list|get|fetch)\b/i.test(question)
+  return recentJobContext && asksForLinks && !hasNewCriteria ? priorQuestion : question
 }
 
 // #determ
@@ -1495,10 +1516,10 @@ async function planQueries(topic, dataFocused = false, retryHint = '') {
             `${topic} economic indicators dataset research study`,
           ]
           : [
-          `${topic} historical price data monthly annual statistics site:macrotrends.net`,
-          `${topic} price series historical data site:fred.stlouisfed.org`,
-          `${topic} historical prices data site:eia.gov OR site:usda.gov OR site:fao.org`,
-          `${topic} downloadable price data CSV API historical series`,
+          `${topic} annual average historical data ${timeScope}`,
+          `${topic} ${timeScope} official statistics dataset`,
+          `${topic} ${timeScope} latest requested year data table CSV`,
+          `${topic} downloadable time series data CSV API`,
         ])
       : []
     const dataFocus = dataFocused
@@ -1506,7 +1527,7 @@ async function planQueries(topic, dataFocused = false, retryHint = '') {
         ? 'This is a broad qualitative spreadsheet request asking for stock candidates, not Excel technology. Find relevant publicly traded companies, names, tickers, sectors, business descriptions, and explicitly stated analyst or source considerations. Numeric metrics are useful when directly available but are optional. Do not claim that a stock is universally "good" or give unsupported personalized investment advice; present sourced candidates and their stated strengths, risks, or selection criteria. Prefer company profiles, exchange listings, investor-relations pages, reputable financial reference sites, and analyst research. Reject or deprioritize articles about Excel STOCKHISTORY, spreadsheet automation, or stock APIs unless the user asked about data integration.'
         : relationalData
           ? 'This is a relational statistics task. Find directly usable data for both variables, preferably official time series, downloadable datasets, or peer-reviewed analyses. Preserve the requested relationship and geography. Do not substitute general news or commentary for the requested data.'
-          : 'This is a statistics retrieval task, not a news-research task. Search historical statistical series first: Macrotrends historical price pages, FRED series, EIA data, USDA data, FAOSTAT, IMF, World Bank, SEC filings, exchange data, reputable financial data providers, national statistics offices, and downloadable CSV/API tables. Use exact phrases such as "historical prices", "price data", "monthly average", "annual average", "time series", "CSV", "API", "financial statements", and "data series". For stock or investment requests, collect sourced ticker, price, valuation, revenue, earnings, dividend, and risk data where available; do not present unsupported personalized buy recommendations. Do not prioritize news, political commentary, forecasts, market outlooks, opinion, or general background. Those may be used only as secondary context after a statistical source is found. Do not return market-size totals, CAGR, forecasts, minimum prices, or general market commentary as substitutes for the requested observations. Every requested period must have a directly quoted numeric observation or be reported as a gap.'
+          : 'This is a statistics retrieval task, not a news-research task. Search for the exact requested measurement, geography, date range, and endpoint year first using official statistics, government datasets, reputable research, and downloadable CSV/API tables. Use phrases such as "annual average", "historical data", "time series", "CSV", "API", and "data table" while preserving the user request. For stock or investment requests, collect sourced ticker, price, valuation, revenue, earnings, dividend, and risk data where available; do not present unsupported personalized buy recommendations. Do not prioritize unrelated news, political commentary, forecasts, market outlooks, opinion, or general background. Do not return market-size totals, CAGR, forecasts, minimum prices, or general market commentary as substitutes for the requested observations. Every requested period must have a directly quoted numeric observation or be reported as a gap.'
       : ''
     const result = await callSwarms(
       'Research Query Planner',
@@ -1696,10 +1717,15 @@ function verifyDossier(dossier, pages) {
       url: source.url,
       title: source.title || page.title,
       published: source.published || page.published,
+      summary: typeof source.summary === 'string' ? source.summary : '',
+      description: typeof source.description === 'string' ? source.description : '',
       key_points: Array.isArray(source.key_points) ? source.key_points : [],
       quotes: (Array.isArray(source.quotes) ? source.quotes : []).filter(
         (quote) => typeof quote === 'string' && normalizeText(quote) && pageText.includes(normalizeText(quote)),
       ),
+      findings: Array.isArray(source.findings)
+        ? source.findings.filter((finding) => typeof finding === 'string' && finding.trim())
+        : [],
       credibility_note: source.credibility_note || '',
     })
   }
@@ -1742,86 +1768,12 @@ function researchDossierHasData(dossier, topic) {
 
 // #determ
 function researchDataProfile(dossier, topic) {
-  const corpus = (Array.isArray(dossier?.sources) ? dossier.sources : [])
-    .flatMap((source) => [
-      ...(Array.isArray(source?.key_points) ? source.key_points : []),
-      ...(Array.isArray(source?.quotes) ? source.quotes : []),
-    ])
-    .filter((value) => typeof value === 'string')
-  const years = new Set()
-  let numericObservations = 0
-  for (const entry of corpus) {
-    const hasNumericObservation = isNumericResearchObservation(entry, topic)
-    if (!hasNumericObservation) continue
-    numericObservations += 1
-    for (const match of entry.matchAll(/\b(?:19|20)\d{2}\b/g)) years.add(Number(match[0]))
-  }
-
-  function isNumericResearchObservation(entry, topic = '') {
-    if (/(?:[$€£]\s*\d|\d[\d,.]*\s*(?:usd|per metric ton|metric tons?|\/\s*(?:lb|kg|gallon)|dollars?|per\s+100(?:,?000|k)|percent|%))/i.test(entry)) {
-      return true
-    }
-    if (isRelationalAnalysisRequest(topic) && /\b(?:rate|rates|ratio|index|indicator|gdp|economic|economy|income|employment|unemployment|inflation|health|population)\b.{0,100}\d[\d,.]*/i.test(entry)) {
-      return true
-    }
-    return isMarketDataRequest(topic) && /\b(?:P\/E|EPS|EBITDA|revenue|earnings|dividend yield|market cap|price target|share price|stock price)\b.{0,80}\d[\d,.]*%?/i.test(entry)
-  }
-  return {
-    numericObservations,
-    observedYears: [...years].sort((a, b) => a - b),
-    requestedRange: topic.match(/(?:19|20)\d{2}\s*(?:[-\u2013\u2014]|to|through)\s*(?:19|20)\d{2}/i)?.[0] || '',
-  }
+  return observationProfile(dossier, topic)
 }
 
 // #determ
 function buildResearchObservationSheet(topic, dossier) {
-  const rows = []
-  for (const source of Array.isArray(dossier?.sources) ? dossier.sources : []) {
-    const entries = [
-      ...(Array.isArray(source?.key_points) ? source.key_points : []),
-      ...(Array.isArray(source?.quotes) ? source.quotes : []),
-    ]
-    for (const entry of entries) {
-      if (typeof entry !== 'string' || !/(?:price|cost|gas|gasoline|diesel|banana|rate|rates|ratio|index|indicator|gdp|economic|economy|income|employment|unemployment|inflation|health|population|per\s+(?:lb|kg|gallon|metric ton|100(?:,?000|k))|P\/E|EPS|EBITDA|revenue|earnings|dividend yield|market cap|price target|share price|stock price)/i.test(entry)) continue
-      const currencyMatch = entry.match(/([$€£])\s*(\d+(?:[.,]\d+)?)/i)
-      const unitMatch = entry.match(/\b(\d+(?:[.,]\d+)?)\s*(usd|dollars?|per\s+(?:lb|kg|gallon|metric ton|100(?:,?000|k))|percent|%)/i)
-      const metricMatch = entry.match(/\b(P\/E|EPS|EBITDA|revenue|earnings|dividend yield|market cap|price target|share price|stock price)\b[^\d]{0,40}(\d+(?:[.,]\d+)?%?)/i)
-      const statisticalMatch = entry.match(/\b(rate|rates|ratio|index|indicator|GDP|economic|economy|income|employment|unemployment|inflation|health|population)\b[^\d]{0,60}(\d+(?:[.,]\d+)?%?)/i)
-      const match = currencyMatch || unitMatch || metricMatch || statisticalMatch
-      if (!match) continue
-      const unit = currencyMatch
-        ? currencyMatch[1]
-        : unitMatch
-          ? unitMatch[2]
-          : metricMatch
-            ? metricMatch[1]
-            : statisticalMatch[1]
-      const value = Number((currencyMatch ? currencyMatch[2] : unitMatch ? unitMatch[1] : metricMatch ? metricMatch[2] : statisticalMatch[2])
-        .replace(',', '')
-        .replace('%', ''))
-      if (!Number.isFinite(value)) continue
-      rows.push({
-        observation: entry.slice(0, 2000),
-        value,
-        unit,
-        source_url: source.url,
-      })
-    }
-  }
-  if (!rows.length) return null
-  return {
-    title: `${topic} (Verified Observations)`,
-    sheets: [{
-      name: 'Data',
-      columns: [
-        { key: 'observation', label: 'Observation', type: 'text' },
-        { key: 'value', label: 'Value', type: 'number' },
-        { key: 'unit', label: 'Unit', type: 'text' },
-        { key: 'source_url', label: 'Source URL', type: 'url' },
-      ],
-      rows,
-    }],
-  }
+  return buildObservationSheet(topic, dossier)
 }
 
 // #determ
@@ -1829,8 +1781,11 @@ function buildResearchTextSheet(topic, dossier) {
   const rows = []
   for (const source of Array.isArray(dossier?.sources) ? dossier.sources : []) {
     const entries = [
+      source?.summary,
+      source?.description,
       ...(Array.isArray(source?.key_points) ? source.key_points : []),
       ...(Array.isArray(source?.quotes) ? source.quotes : []),
+      ...(Array.isArray(source?.findings) ? source.findings : []),
     ]
     for (const entry of entries) {
       if (typeof entry !== 'string' || !entry.trim() || typeof source?.url !== 'string' || !source.url) continue
@@ -2001,14 +1956,42 @@ async function runResearcher(jobId, topic, deliverable = null, recalledMemories 
     let gathered = null
     let dossier = null
     let validation = { valid: true, confidence: 1, missingRequirements: [], unsupportedClaims: [], recommendedAction: 'publish' }
-    const maxResearchAttempts = deliverable === 'spreadsheet' ? 2 : 1
+    let targetedRetryHint = ''
+    const maxResearchAttempts = deliverable === 'spreadsheet' ? 3 : 1
     for (let attempt = 0; attempt < maxResearchAttempts; attempt += 1) {
-      const retryHint = attempt === 0
+      const retryHint = `${attempt === 0
         ? ''
         : isGeneralQualitativeSpreadsheet(topic) && isMarketDataRequest(topic)
           ? `This is recovery attempt ${attempt + 1}. The prior sources discussed Excel or data retrieval instead of stock candidates. Find different sources that name actual publicly traded companies and tickers, with sectors, business descriptions, strengths, or risks. Do not return Excel tutorials, spreadsheet automation, or API documentation. The user asked for: ${topic}`
-          : `This is recovery attempt ${attempt + 1}. The prior source set did not answer the request. Find a different authoritative dataset, preferably a downloadable time series or official API/table. Do not reuse commentary-only sources. The user asked for: ${topic}`
+          : `This is recovery attempt ${attempt + 1}. The prior source set did not answer the request or did not include the requested end year. Find a different authoritative dataset, preferably a downloadable time series or official API/table, and explicitly retrieve the latest requested year. Do not reuse commentary-only or unrelated sources. The user asked for: ${topic}`}\n${targetedRetryHint}`
       gathered = await gatherPages(topic, deliverable === 'spreadsheet' || attempt > 0, retryHint)
+      if (gathered.pages.size > 0) {
+        try {
+          const endpointPages = await fetchResearchEndpoints({
+            topic,
+            pages: gathered.pages,
+            callSwarms,
+            getOutput,
+            modelName: configuredModel('RESEARCH_MODEL', fallbackModels.research),
+          })
+          for (const [url, page] of endpointPages) gathered.pages.set(url, page)
+          const judged = await judgeResearchSources({
+            topic,
+            pages: gathered.pages,
+            callSwarms,
+            getOutput,
+            modelName: configuredModel('RESEARCH_VALIDATOR_MODEL', fallbackModels.research),
+          })
+          if (judged.pages.size > 0) {
+            gathered.pages = judged.pages
+          } else {
+            gathered.pages = new Map()
+            gathered.judgeReasons = judged.reasons
+          }
+        } catch (error) {
+          console.warn('Source judge unavailable; retaining gathered pages for deterministic verification:', error)
+        }
+      }
       dossier = gathered.pages.size
         ? await extractResearchDossier(topic, gathered)
         : {
@@ -2022,8 +2005,32 @@ async function runResearcher(jobId, topic, deliverable = null, recalledMemories 
       validation = deliverable
         ? await validateResearchDossier(topic, dossier, deliverable)
         : { valid: true, confidence: 1, missingRequirements: [], unsupportedClaims: [], recommendedAction: 'publish' }
+      if (deliverable === 'spreadsheet' && dossier.sources.length > 0) {
+        try {
+          const gaps = await critiqueResearchGaps({
+            topic,
+            dossier,
+            profile: researchDataProfile(dossier, topic),
+            callSwarms,
+            getOutput,
+            modelName: configuredModel('RESEARCH_VALIDATOR_MODEL', fallbackModels.research),
+          })
+          dossier.gaps = [
+            ...(Array.isArray(dossier.gaps) ? dossier.gaps : []),
+            ...gaps.missing,
+          ]
+          if (!gaps.complete && gaps.nextSearches.length > 0) {
+            targetedRetryHint = `Targeted missing-evidence searches: ${gaps.nextSearches.join('; ')}`
+          }
+        } catch (error) {
+          console.warn('Gap critic unavailable; continuing with deterministic coverage checks:', error)
+        }
+      }
       const hasData = deliverable !== 'spreadsheet' || researchDossierHasData(dossier, topic)
-      if (hasData) break
+      const needsCoverageRetry = deliverable === 'spreadsheet'
+        && spreadsheetRequiresQuantitativeData(topic)
+        && researchMissingRequestedEndYear(topic, dossier)
+      if (hasData && !needsCoverageRetry) break
       console.warn(`Research attempt ${attempt + 1} did not satisfy the deliverable; retrying with another source set.`)
     }
     const { queries, pages, excludedSourceCount } = gathered
@@ -2723,7 +2730,7 @@ async function handleChat(request, response) {
     calendarRequest,
   })
   const jobSearchRequest = interpretation.intent === 'job_search'
-  const jobSearchQuery = jobSearchRequest ? getJobSearchQuery(interpretation.task || trimmedQuestion) : trimmedQuestion
+  const jobSearchQuery = jobSearchRequest ? getJobSearchQuery(trimmedQuestion) : trimmedQuestion
   const spreadsheetRequested = wantsSpreadsheet(trimmedQuestion)
   const directProgrammingRequest = interpretation.intent === 'programming'
     && !wantsDocument(trimmedQuestion)

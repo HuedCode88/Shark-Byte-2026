@@ -238,6 +238,9 @@ function ResearchReport({ dossier, jobId, document, spreadsheet, onCreateDocumen
               const quotes = Array.isArray(source.quotes)
                 ? source.quotes.filter((item) => typeof item === 'string' && item.trim())
                 : []
+              const findings = Array.isArray(source.findings)
+                ? source.findings.filter((item) => typeof item === 'string' && item.trim())
+                : []
 
               return (
                 <article className="research-source" key={`${url || title}-${index}`}>
@@ -249,8 +252,13 @@ function ResearchReport({ dossier, jobId, document, spreadsheet, onCreateDocumen
                   {typeof source.published === 'string' && source.published && (
                     <p className="source-date">Published {source.published}</p>
                   )}
+                  {typeof source.summary === 'string' && source.summary && <p>{source.summary}</p>}
+                  {typeof source.description === 'string' && source.description && <p>{source.description}</p>}
                   {keyPoints.length > 0 && (
                     <ul>{keyPoints.map((point, pointIndex) => <li key={pointIndex}>{point}</li>)}</ul>
+                  )}
+                  {findings.length > 0 && (
+                    <ul>{findings.map((finding, findingIndex) => <li key={findingIndex}>{finding}</li>)}</ul>
                   )}
                   {quotes.map((quote, quoteIndex) => (
                     <blockquote key={quoteIndex}>{quote}</blockquote>

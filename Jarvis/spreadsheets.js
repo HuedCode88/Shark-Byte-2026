@@ -124,9 +124,16 @@ export function parseSheetSpec(rawOutput, options = {}) {
 function dossierText(dossier) {
   const parts = [dossier?.summary]
   for (const source of Array.isArray(dossier?.sources) ? dossier.sources : []) {
-    parts.push(source?.title, source?.published, source?.credibility_note)
+    parts.push(
+      source?.title,
+      source?.published,
+      source?.summary,
+      source?.description,
+      source?.credibility_note,
+    )
     parts.push(...(Array.isArray(source?.key_points) ? source.key_points : []))
     parts.push(...(Array.isArray(source?.quotes) ? source.quotes : []))
+    parts.push(...(Array.isArray(source?.findings) ? source.findings : []))
   }
   return parts.filter((value) => typeof value === 'string').join(' ').toLowerCase()
 }
@@ -238,7 +245,7 @@ export function renderSheetHtml(spec) {
     return `<section><h2>${escapeHtml(sheet.name)}</h2><table><thead><tr>${headers}</tr></thead><tbody>${rows}</tbody></table></section>`
   }).join('')
   return `<!doctype html><html><head><meta charset="utf-8"><style>
-body{font:14px Arial,sans-serif;color:#17302d;background:#fff;padding:20px}section{margin-bottom:28px}h1{font-size:22px}h2{font-size:17px}table{border-collapse:collapse;width:100%;margin-top:8px}th,td{border:1px solid #cbd9cf;padding:7px;text-align:left;vertical-align:top}th{background:#e8f1e8}td.flagged{background:#fff0a8}
+body{font:14px Arial,sans-serif;color:#17302d;background:#fff;padding:20px}section{margin-bottom:28px;overflow-x:auto}h1{font-size:22px}h2{font-size:17px}table{border-collapse:separate;border-spacing:0;width:100%;min-width:620px;margin-top:8px}th,td{border:1px solid #cbd9cf;padding:9px 10px;text-align:left;vertical-align:top;line-height:1.4;white-space:normal;overflow-wrap:anywhere}th{background:#e8f1e8}td.flagged{background:#fff0a8}
 </style></head><body><h1>${escapeHtml(spec.title)}</h1>${sections}</body></html>`
 }
 
