@@ -820,7 +820,7 @@ export default function App() {
               levelRef={levelRef}
               width={560}
               height={92}
-              color="#83b84e"
+              color="#58d8e6"
             />
           </div>
           <div className="voice-actions">

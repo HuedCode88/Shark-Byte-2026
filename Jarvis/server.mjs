@@ -73,18 +73,18 @@ const fastLaneMode = ['off', 'shadow', 'on'].includes(process.env.FAST_LANE_MODE
 const fastLaneLogPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'data', 'fastlane-log.jsonl')
 const excludedResearchDomains = new Set(['facebook.com', 'fb.com', 'reddit.com', 'redd.it'])
 const fallbackModels = {
-  research: 'gpt-4o',
-  thinker: 'gpt-4o',
+  research: 'gpt-4o-mini',
+  thinker: 'gpt-4o-mini',
   memory: 'gpt-4o-mini',
-  guardian: 'gpt-4o',
+  guardian: 'gpt-4o-mini',
   delivery: 'gpt-4o-mini',
-  initiator: 'gpt-4o',
-  docWriter: 'gpt-4o',
-  docStructure: 'gpt-4.1',
+  initiator: 'gpt-4o-mini',
+  docWriter: 'gpt-4o-mini',
+  docStructure: 'gpt-4o-mini',
   orchestrator: 'gpt-4o-mini',
-  programmer: 'gpt-4o',
-  spreadsheetAnalyst: 'gpt-4o',
-  spreadsheetStructure: 'gpt-4.1',
+  programmer: 'gpt-4o-mini',
+  spreadsheetAnalyst: 'gpt-4o-mini',
+  spreadsheetStructure: 'gpt-4o-mini',
 }
 
 // #determ
@@ -494,6 +494,10 @@ function remember(facts) {
     }
   }
   while (memories.length > maxMemoryEntries) memories.shift()
+}
+
+function shouldRunMemoryKeeper(question) {
+  return /\b(?:remember|don't forget|do not forget|from now on|call me|my name is|i prefer|i like|i dislike|i work as|i work at|i live in|my goal is|my preference is)\b/i.test(question)
 }
 
 // #determ
@@ -1059,33 +1063,25 @@ async function runThinker(jobId, question, emotion, recalledMemories, interpreta
     const programmingNote = interpretation.intent === 'programming'
       ? '\nThis is a programming response. Preserve fenced code blocks, language tags, indentation, blank lines, and line wrapping exactly through delivery. Do not convert code to prose or a one-line paragraph.'
       : ''
-    const programmingAgent = interpretation.intent === 'programming'
+    const programmingTurn = interpretation.intent === 'programming'
+    const singleAgentTurn = programmingTurn || ['answer', 'clarify'].includes(interpretation.intent)
+    const agents = singleAgentTurn
       ? [{
-          agent_name: 'ProgrammingAssistant',
-          system_prompt:
-            'Act as the programming specialist. Solve the exact programming request with correct, directly usable code. Use fenced code blocks with a language tag, explain key decisions briefly, identify filenames when relevant, and never replace code with vague advice. Preserve existing project behavior when modifying code.',
-          model_name: configuredModel('PROGRAMMER_MODEL', fallbackModels.programmer),
+          agent_name: programmingTurn ? 'ProgrammingAssistant' : 'JarvisFastAssistant',
+          system_prompt: programmingTurn
+            ? 'Solve the exact programming request with correct, directly usable code. Use fenced code blocks with a language tag, explain key decisions briefly, identify filenames when relevant, and preserve existing project behavior. Never replace code with vague advice.'
+            : 'Answer the user’s exact request directly using the routing instruction and relevant conversation context. Be accurate, concise, and natural. Do not add a generic offer to help. If the route is clarify, ask only the single necessary question. If information is uncertain or unavailable, say so instead of inventing facts.',
+          model_name: programmingTurn
+            ? configuredModel('PROGRAMMER_MODEL', fallbackModels.programmer)
+            : configuredModel('FAST_CHAT_MODEL', fallbackModels.thinker),
         }]
-      : []
-    const result = await callSwarms(
-      'Jarvis Slow Layer',
-      `Answer the exact user message below. Do not invent a different question or assume the user asked how you are doing.
-User message:
-<<<${question}>>>
-Routing instruction: ${interpretation.task}
-Previous conversation context:
-${getLatestConversationContext()}
-If the route is programming, act as a programming assistant: provide correct, directly usable code in fenced code blocks, explain only what is needed, and include filenames or usage steps when useful.
-Tone note: ${emotion}
-Relevant memories: ${recalledMemories.join('; ') || 'none'}${documentNote}${spreadsheetNote}${programmingNote}`,
-      [
+      : [
           {
             agent_name: 'Thinker',
             system_prompt:
               'Answer the exact user message, not a generic conversation starter. Follow the routing instruction. If the route is clarify, ask one concise question for the missing subject or document; do not invent context. Do the hard reasoning, planning, and research needed for that message. If it is only a greeting, greet the user briefly; otherwise address the requested subject directly. Return useful findings for a final speaker.',
             model_name: configuredModel('THINKER_MODEL', fallbackModels.thinker),
           },
-          ...programmingAgent,
           {
             agent_name: 'PersonaGuardian',
             system_prompt:
@@ -1108,7 +1104,20 @@ Relevant memories: ${recalledMemories.join('; ') || 'none'}${documentNote}${spre
               'If a relevant memory is available, add one subtle callback or follow-up. Otherwise leave the answer unchanged. Never force a callback.',
             model_name: configuredModel('INITIATOR_MODEL', fallbackModels.initiator),
           },
-      ],
+        ]
+    const result = await callSwarms(
+      'Jarvis Slow Layer',
+      `Answer the exact user message below. Do not invent a different question or assume the user asked how you are doing.
+User message:
+<<<${question}>>>
+Routing instruction: ${interpretation.task}
+Previous conversation context:
+${getLatestConversationContext()}
+If the route is programming, act as a programming assistant: provide correct, directly usable code in fenced code blocks, explain only what is needed, and include filenames or usage steps when useful.
+Tone note: ${emotion}
+Relevant memories: ${recalledMemories.join('; ') || 'none'}${documentNote}${spreadsheetNote}${programmingNote}`,
+      agents,
+  singleAgentTurn ? 'SequentialWorkflow' : 'MixtureOfAgents',
     )
     const delivery = prepareDelivery(getOutput(result), interpretation.intent === 'programming')
     if (!delivery.text) {
@@ -3312,7 +3321,9 @@ async function handleChat(request, response) {
     }
   }
   if (!thinkerStarted) logRequestMetrics(jobId, trimmedQuestion, requestMetrics)
-  if (!jobSearchRequest && !calendarRequest) void runMemoryKeeper(trimmedQuestion, recalledMemories)
+  if (!jobSearchRequest && !calendarRequest && shouldRunMemoryKeeper(trimmedQuestion)) {
+    void runMemoryKeeper(trimmedQuestion, recalledMemories)
+  }
 }
 
 const server = createServer(async (request, response) => {
