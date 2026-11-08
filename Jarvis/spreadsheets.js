@@ -44,6 +44,10 @@ function safeKey(value, index) {
   return key || `column_${index + 1}`
 }
 
+function comparableKey(value) {
+  return String(value ?? '').toLowerCase().replace(/[^a-z0-9]/g, '')
+}
+
 function normalizeType(value) {
   const type = cleanText(value, 'text').toLowerCase()
   return new Set(['text', 'number', 'integer', 'percent', 'currency', 'date', 'boolean', 'url']).has(type)
@@ -97,10 +101,28 @@ function normalizeSpec(raw) {
       columns,
       rows: rows.map((row) => {
         const source = row && typeof row === 'object' && !Array.isArray(row) ? row : {}
-        return Object.fromEntries(columns.map((column) => [
-          column.key,
-          sanitizeValue(source[column.key], column.type),
-        ]))
+        return Object.fromEntries(columns.map((column, columnIndex) => {
+          const inputColumn = inputColumns[columnIndex] || {}
+          if (Array.isArray(row)) {
+            return [column.key, sanitizeValue(row[columnIndex], column.type)]
+          }
+
+          const aliases = [column.key, inputColumn.key, inputColumn.label]
+            .filter((value) => typeof value === 'string' && value.trim())
+          let value
+          for (const alias of aliases) {
+            if (Object.prototype.hasOwnProperty.call(source, alias)) {
+              value = source[alias]
+              break
+            }
+          }
+          if (value === undefined) {
+            const comparableAliases = new Set(aliases.map(comparableKey))
+            const match = Object.entries(source).find(([key]) => comparableAliases.has(comparableKey(key)))
+            if (match) value = match[1]
+          }
+          return [column.key, sanitizeValue(value, column.type)]
+        }))
       }),
     }
   })

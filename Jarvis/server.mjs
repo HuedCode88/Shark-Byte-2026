@@ -1,5 +1,5 @@
 import dotenv from 'dotenv'
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
@@ -57,7 +57,7 @@ let latestConversationKind = null
 let latestJobSearch = null
 let latestDossier = null
 let pendingCalendarAction = null
-let pendingNoteAction = false
+let pendingNoteAction = null
 let latestRequestSequence = 0
 const maxMemoryEntries = 20
 const maxJobEntries = 100
@@ -66,20 +66,25 @@ const maxResearchPages = 8
 const maxJobSearchPages = 6
 const maxResearchScrapeConcurrency = 2
 const maxPageChars = 12000
+const pendingStateMaxAgeMs = 60 * 1000
+const fastLaneMode = ['off', 'shadow', 'on'].includes(process.env.FAST_LANE_MODE)
+  ? process.env.FAST_LANE_MODE
+  : 'off'
+const fastLaneLogPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'data', 'fastlane-log.jsonl')
 const excludedResearchDomains = new Set(['facebook.com', 'fb.com', 'reddit.com', 'redd.it'])
 const fallbackModels = {
-  research: 'gpt-4o',
-  thinker: 'gpt-4o',
+  research: 'gpt-4o-mini',
+  thinker: 'gpt-4o-mini',
   memory: 'gpt-4o-mini',
-  guardian: 'gpt-4o',
+  guardian: 'gpt-4o-mini',
   delivery: 'gpt-4o-mini',
-  initiator: 'gpt-4o',
-  docWriter: 'gpt-4o',
-  docStructure: 'gpt-4.1',
+  initiator: 'gpt-4o-mini',
+  docWriter: 'gpt-4o-mini',
+  docStructure: 'gpt-4o-mini',
   orchestrator: 'gpt-4o-mini',
-  programmer: 'gpt-4o',
-  spreadsheetAnalyst: 'gpt-4o',
-  spreadsheetStructure: 'gpt-4.1',
+  programmer: 'gpt-4o-mini',
+  spreadsheetAnalyst: 'gpt-4o-mini',
+  spreadsheetStructure: 'gpt-4o-mini',
 }
 
 // #determ
@@ -327,11 +332,41 @@ function isGreeting(question) {
   return /^(hi|hello|hey|yo|hiya|greetings)(\s+jarvis)?[!.?,\s]*$/i.test(question.trim())
 }
 
+function getTierZeroFastLane(question) {
+  if (isGreeting(question)) {
+    return { lane: 'tier0', rule: 'greeting', tier: 0, confidence: 1, laneIntent: 'answer' }
+  }
+  if (isCalendarOverviewRequest(question)) {
+    return { lane: 'tier0', rule: 'calendar_read', tier: 0, confidence: 0.99, laneIntent: 'calendar' }
+  }
+  if (isNoteListRequest(question)) {
+    return { lane: 'tier0', rule: 'notes_list', tier: 0, confidence: 0.99, laneIntent: 'note' }
+  }
+  if (getNewsRequest(question)) {
+    return { lane: 'tier0', rule: 'news', tier: 0, confidence: 0.98, laneIntent: 'news' }
+  }
+  return null
+}
+
+function logFastLaneShadow(question, laneResult, finalIntent) {
+  if (fastLaneMode !== 'shadow' || !laneResult) return
+  const entry = {
+    question,
+    rule: laneResult.rule,
+    laneIntent: laneResult.laneIntent,
+    finalIntent,
+    agree: laneResult.laneIntent === finalIntent,
+  }
+  void appendFile(fastLaneLogPath, `${JSON.stringify(entry)}\n`, 'utf8').catch((error) => {
+    console.error('Fast-lane shadow log failed:', error)
+  })
+}
+
 function isNoteSaveRequest(question) {
   return /\b(?:take|make|write|jot|save|record)\b.{0,35}\b(?:a\s+)?note\b/i.test(question)
     || /\b(?:write|jot)\s+(?:this|that)\s+down\b/i.test(question)
     || /\bnote\s+that\b/i.test(question)
-    || /\bremember\s+(?:this|that|to)\b/i.test(question)
+    || /\bremember\s+(?:this|that|to)\b\s*[:,-]?\s*[A-Za-z0-9]/i.test(question)
 }
 
 function isNoteListRequest(question) {
@@ -344,7 +379,7 @@ function isNoteDeleteRequest(question) {
 }
 
 function isNoteRequest(question) {
-  return pendingNoteAction || isNoteSaveRequest(question) || isNoteListRequest(question) || isNoteDeleteRequest(question)
+  return Boolean(pendingNoteAction) || isNoteSaveRequest(question) || isNoteListRequest(question) || isNoteDeleteRequest(question)
 }
 
 function extractNoteText(question) {
@@ -461,6 +496,10 @@ function remember(facts) {
   while (memories.length > maxMemoryEntries) memories.shift()
 }
 
+function shouldRunMemoryKeeper(question) {
+  return /\b(?:remember|don't forget|do not forget|from now on|call me|my name is|i prefer|i like|i dislike|i work as|i work at|i live in|my goal is|my preference is)\b/i.test(question)
+}
+
 // #determ
 function updateJob(jobId, patch) {
   const next = { ...(jobs.get(jobId) || {}), ...patch }
@@ -473,6 +512,18 @@ function updateJob(jobId, patch) {
   }
   jobs.set(jobId, next)
   while (jobs.size > maxJobEntries) jobs.delete(jobs.keys().next().value)
+}
+
+function logRequestMetrics(jobId, question, metrics) {
+  console.info('[request-metrics]', JSON.stringify({
+    jobId,
+    question,
+    interpret_ms: metrics.interpret_ms,
+    resolve_ms: metrics.resolve_ms,
+    thinker_ms: metrics.thinker_ms,
+    interpret_swarms_calls: metrics.interpret_swarms_calls,
+    resolve_swarms_calls: metrics.resolve_swarms_calls,
+  }))
 }
 
 // #determ
@@ -581,7 +632,14 @@ function fallbackInterpretation(question, hasDocument, hasSpreadsheet = false, p
 
 // #determ
 function isProgrammingRequest(question) {
-  return /\b(code|coding|program|programming|developer|debug|debugging|function|class|algorithm|binary tree|api|javascript|typescript|python|java|c\+\+|c#|go|rust|ruby|php|kotlin|swift|react|vue|css|html|sql|regex)\b/i.test(question)
+  const text = String(question || '')
+  const hasFencedCode = /```[\s\S]*```/.test(text)
+  const hasFileExtension = /\b[\w.-]+\.(?:js|jsx|ts|tsx|py|java|go|rs|rb|php|kt|swift|cpp|cs|css|html|sql|json|yaml|yml)\b/i.test(text)
+  const hasStrongProgrammingTerm = /\b(?:code|coding|programming|developer|debug|debugging|algorithm|binary\s+tree|javascript|typescript|python|rust|ruby|php|kotlin|react|vue|css|html|sql|regex)\b/i.test(text)
+  const hasWeakProgrammingTerm = /\b(?:go|class|function|api|program|java|swift)\b/i.test(text)
+  const hasLanguageWithCodeSignal = /\b(?:go|java|swift|javascript|typescript|python|rust|ruby|php|kotlin|c\+\+|c#)\b[\s\S]{0,80}\b(?:code|script|error)\b|\b(?:code|script|error)\b[\s\S]{0,80}\b(?:go|java|swift|javascript|typescript|python|rust|ruby|php|kotlin|c\+\+|c#)\b/i.test(text)
+  return hasFencedCode || hasFileExtension || hasStrongProgrammingTerm
+    || (hasWeakProgrammingTerm && hasLanguageWithCodeSignal)
 }
 
 // #determ
@@ -673,7 +731,39 @@ function isCalendarBulkClearRequest(question) {
 
 // #determ
 function isCalendarConfirmation(question) {
-  return /\b(?:confirm|confirmed|yes|yes please|do it|go ahead|proceed)\b/i.test(question)
+  return /^(?:confirm|confirmed|yes|yes please|do it|go ahead|proceed)[.!]?$/i.test(question.trim())
+}
+
+function isPendingStateExpired(state) {
+  return !state || typeof state.createdAt !== 'number' || Date.now() - state.createdAt > pendingStateMaxAgeMs
+}
+
+function clearUnrepliedPendingState(question) {
+  if (!isPendingStateExpired(pendingCalendarAction)) {
+    const calendarReply = isCalendarClarificationReply(question)
+    const differentRequest = isGreeting(question)
+      || isNoteListRequest(question)
+      || isNoteDeleteRequest(question)
+      || isProgrammingRequest(question)
+      || wantsWebResearch(question)
+      || Boolean(getNewsRequest(question))
+      || isJobSearchRequest(question)
+    if (!calendarReply && differentRequest) pendingCalendarAction = null
+  } else {
+    pendingCalendarAction = null
+  }
+
+  if (isPendingStateExpired(pendingNoteAction)) {
+    pendingNoteAction = null
+  } else if (
+    isCalendarRequest(question)
+    || isProgrammingRequest(question)
+    || wantsWebResearch(question)
+    || Boolean(getNewsRequest(question))
+    || isJobSearchRequest(question)
+  ) {
+    pendingNoteAction = null
+  }
 }
 
 // #determ
@@ -885,6 +975,7 @@ async function interpretConversation(question, recalledMemories, context = {}) {
     || (fallback.intent === 'answer' && !asksForWrittenWork)) return fallback
 
   try {
+    if (context.metrics) context.metrics.interpret_swarms_calls += 1
     const result = await callSwarms(
       'Jarvis Conversation Orchestrator',
       `Interpret the user's latest message and select the correct next action.
@@ -946,7 +1037,8 @@ User turn: ${question}`,
   }
 }
 
-async function runThinker(jobId, question, emotion, recalledMemories, interpretation, requestSequence) {
+async function runThinker(jobId, question, emotion, recalledMemories, interpretation, requestSequence, metrics) {
+  const thinkerStartedAt = performance.now()
   try {
     if (!process.env.SWARMS_API_KEY) {
       updateJob(jobId, { status: 'failed', error: 'SWARMS_API_KEY is not configured on the server.' })
@@ -971,33 +1063,25 @@ async function runThinker(jobId, question, emotion, recalledMemories, interpreta
     const programmingNote = interpretation.intent === 'programming'
       ? '\nThis is a programming response. Preserve fenced code blocks, language tags, indentation, blank lines, and line wrapping exactly through delivery. Do not convert code to prose or a one-line paragraph.'
       : ''
-    const programmingAgent = interpretation.intent === 'programming'
+    const programmingTurn = interpretation.intent === 'programming'
+    const singleAgentTurn = programmingTurn || ['answer', 'clarify'].includes(interpretation.intent)
+    const agents = singleAgentTurn
       ? [{
-          agent_name: 'ProgrammingAssistant',
-          system_prompt:
-            'Act as the programming specialist. Solve the exact programming request with correct, directly usable code. Use fenced code blocks with a language tag, explain key decisions briefly, identify filenames when relevant, and never replace code with vague advice. Preserve existing project behavior when modifying code.',
-          model_name: configuredModel('PROGRAMMER_MODEL', fallbackModels.programmer),
+          agent_name: programmingTurn ? 'ProgrammingAssistant' : 'JarvisFastAssistant',
+          system_prompt: programmingTurn
+            ? 'Solve the exact programming request with correct, directly usable code. Use fenced code blocks with a language tag, explain key decisions briefly, identify filenames when relevant, and preserve existing project behavior. Never replace code with vague advice.'
+            : 'Answer the user’s exact request directly using the routing instruction and relevant conversation context. Be accurate, concise, and natural. Do not add a generic offer to help. If the route is clarify, ask only the single necessary question. If information is uncertain or unavailable, say so instead of inventing facts.',
+          model_name: programmingTurn
+            ? configuredModel('PROGRAMMER_MODEL', fallbackModels.programmer)
+            : configuredModel('FAST_CHAT_MODEL', fallbackModels.thinker),
         }]
-      : []
-    const result = await callSwarms(
-      'Jarvis Slow Layer',
-      `Answer the exact user message below. Do not invent a different question or assume the user asked how you are doing.
-User message:
-<<<${question}>>>
-Routing instruction: ${interpretation.task}
-Previous conversation context:
-${getLatestConversationContext()}
-If the route is programming, act as a programming assistant: provide correct, directly usable code in fenced code blocks, explain only what is needed, and include filenames or usage steps when useful.
-Tone note: ${emotion}
-Relevant memories: ${recalledMemories.join('; ') || 'none'}${documentNote}${spreadsheetNote}${programmingNote}`,
-      [
+      : [
           {
             agent_name: 'Thinker',
             system_prompt:
               'Answer the exact user message, not a generic conversation starter. Follow the routing instruction. If the route is clarify, ask one concise question for the missing subject or document; do not invent context. Do the hard reasoning, planning, and research needed for that message. If it is only a greeting, greet the user briefly; otherwise address the requested subject directly. Return useful findings for a final speaker.',
             model_name: configuredModel('THINKER_MODEL', fallbackModels.thinker),
           },
-          ...programmingAgent,
           {
             agent_name: 'PersonaGuardian',
             system_prompt:
@@ -1020,7 +1104,20 @@ Relevant memories: ${recalledMemories.join('; ') || 'none'}${documentNote}${spre
               'If a relevant memory is available, add one subtle callback or follow-up. Otherwise leave the answer unchanged. Never force a callback.',
             model_name: configuredModel('INITIATOR_MODEL', fallbackModels.initiator),
           },
-      ],
+        ]
+    const result = await callSwarms(
+      'Jarvis Slow Layer',
+      `Answer the exact user message below. Do not invent a different question or assume the user asked how you are doing.
+User message:
+<<<${question}>>>
+Routing instruction: ${interpretation.task}
+Previous conversation context:
+${getLatestConversationContext()}
+If the route is programming, act as a programming assistant: provide correct, directly usable code in fenced code blocks, explain only what is needed, and include filenames or usage steps when useful.
+Tone note: ${emotion}
+Relevant memories: ${recalledMemories.join('; ') || 'none'}${documentNote}${spreadsheetNote}${programmingNote}`,
+      agents,
+  singleAgentTurn ? 'SequentialWorkflow' : 'MixtureOfAgents',
     )
     const delivery = prepareDelivery(getOutput(result), interpretation.intent === 'programming')
     if (!delivery.text) {
@@ -1037,6 +1134,9 @@ Relevant memories: ${recalledMemories.join('; ') || 'none'}${documentNote}${spre
     console.error('Slow thinker failed:', error)
     const message = error instanceof Error ? error.message : 'Unknown slow-layer failure.'
     updateJob(jobId, { status: 'failed', error: `The slow layer failed: ${message}` })
+  } finally {
+    metrics.thinker_ms = Math.round(performance.now() - thinkerStartedAt)
+    logRequestMetrics(jobId, question, metrics)
   }
 }
 
@@ -1798,7 +1898,7 @@ async function gatherPages(topic, dataFocused = false, retryHint = '') {
       })
     })
   }
-  return { queries, pages, excludedSourceCount, edgeCase, edgeLanes }
+  return { queries, pages, endpointUrls: new Set(), excludedSourceCount, edgeCase, edgeLanes }
 }
 
 // #determ
@@ -2062,14 +2162,19 @@ async function runResearcher(jobId, topic, deliverable = null, recalledMemories 
       gathered = await gatherPages(topic, deliverable === 'spreadsheet' || attempt > 0, retryHint)
       if (gathered.pages.size > 0) {
         try {
-          const endpointPages = await fetchResearchEndpoints({
-            topic,
-            pages: gathered.pages,
-            callSwarms,
-            getOutput,
-            modelName: configuredModel('RESEARCH_MODEL', fallbackModels.research),
-          })
-          for (const [url, page] of endpointPages) gathered.pages.set(url, page)
+          if (deliverable === 'spreadsheet') {
+            const endpointPages = await fetchResearchEndpoints({
+              topic,
+              pages: gathered.pages,
+              callSwarms,
+              getOutput,
+              modelName: configuredModel('RESEARCH_MODEL', fallbackModels.research),
+            })
+            for (const [url, page] of endpointPages) {
+              gathered.pages.set(url, page)
+              gathered.endpointUrls.add(url)
+            }
+          }
           const judged = await judgeResearchSources({
             topic,
             pages: gathered.pages,
@@ -2078,9 +2183,16 @@ async function runResearcher(jobId, topic, deliverable = null, recalledMemories 
             modelName: configuredModel('RESEARCH_VALIDATOR_MODEL', fallbackModels.research),
           })
           if (judged.pages.size > 0) {
-            gathered.pages = judged.pages
+            const acceptedPages = new Map(judged.pages)
+            for (const url of gathered.endpointUrls) {
+              const page = gathered.pages.get(url)
+              if (page) acceptedPages.set(url, page)
+            }
+            gathered.pages = acceptedPages
           } else {
-            gathered.pages = new Map()
+            gathered.pages = new Map(
+              [...gathered.pages].filter(([url]) => gathered.endpointUrls.has(url)),
+            )
             gathered.judgeReasons = judged.reasons
           }
         } catch (error) {
@@ -2415,8 +2527,23 @@ async function runNoteManager(jobId, question) {
     let action
     let note = null
     let summary
-    if (pendingNoteAction && /\b(?:cancel|never mind|forget it)\b/i.test(question)) {
-      pendingNoteAction = false
+    if (pendingNoteAction?.action === 'delete') {
+      if (/\b(?:cancel|never mind|forget it)\b/i.test(question)) {
+        pendingNoteAction = null
+        action = 'cancel'
+        summary = 'Okay, I will not delete the note.'
+      } else if (isCalendarConfirmation(question)) {
+        note = await deleteNote(pendingNoteAction.noteId)
+        notes = await listNotes()
+        pendingNoteAction = null
+        action = 'delete'
+        summary = 'Removed that note.'
+      } else {
+        action = 'confirm_delete'
+        summary = 'Please reply "confirm" to delete that note, or "cancel" to keep it.'
+      }
+    } else if (pendingNoteAction && /\b(?:cancel|never mind|forget it)\b/i.test(question)) {
+      pendingNoteAction = null
       action = 'cancel'
       summary = 'Okay, I will not save a note.'
     } else if (isNoteListRequest(question)) {
@@ -2427,10 +2554,14 @@ async function runNoteManager(jobId, question) {
       const target = question.replace(/^(?:please\s+)?(?:remove|delete|forget|erase)\s+(?:(?:the|my)\s+)?(?:note\s+)?(?:about\s+)?/i, '').trim()
       const matches = notes.filter((saved) => !target || saved.text.toLowerCase().includes(target.toLowerCase()))
       if (matches.length === 1) {
-        note = await deleteNote(matches[0].id)
-        notes = await listNotes()
-        action = 'delete'
-        summary = 'Removed that note.'
+        pendingNoteAction = {
+          action: 'delete',
+          noteId: matches[0].id,
+          createdAt: Date.now(),
+        }
+        action = 'confirm_delete'
+        note = matches[0]
+        summary = 'I found that note. Reply "confirm" if you want me to delete it, or "cancel" to keep it.'
       } else {
         action = 'clarify'
         summary = matches.length > 1 ? 'I found more than one matching note. Please be more specific.' : 'I could not find a matching note.'
@@ -2438,18 +2569,18 @@ async function runNoteManager(jobId, question) {
     } else {
       const text = extractNoteText(question)
       if (!text) {
-        pendingNoteAction = true
+        pendingNoteAction = { createdAt: Date.now() }
         action = 'clarify'
         summary = 'What would you like me to write down?'
       } else {
-        pendingNoteAction = false
+        pendingNoteAction = null
         note = { id: randomUUID(), text, createdAt: new Date().toISOString() }
         notes = await updateNotes((current) => [...current, note])
         action = 'create'
         summary = 'Saved your note.'
       }
     }
-    if (action !== 'clarify') pendingNoteAction = false
+    if (action !== 'clarify' && action !== 'confirm_delete') pendingNoteAction = null
     latestConversation = { question, response: summary }
     latestConversationKind = 'note'
     updateJob(jobId, { status: 'complete', output: summary, noteResult: { action, summary, note, notes } })
@@ -2569,15 +2700,15 @@ async function runCalendarDeleter(jobId, question, requestedTimeZone) {
       action = 'delete'
       summary = `Removed ${deleted.title} from your calendar.`
     } else if (matches.length > 1) {
-      pendingCalendarAction = { action: 'delete', awaiting: 'deleteTarget' }
+      pendingCalendarAction = { action: 'delete', awaiting: 'deleteTarget', createdAt: Date.now() }
       summary = `I found ${matches.length} matching events. Which one should I remove?`
     } else if (!targetWords.length) {
-      pendingCalendarAction = { action: 'delete', awaiting: 'deleteTarget' }
+      pendingCalendarAction = { action: 'delete', awaiting: 'deleteTarget', createdAt: Date.now() }
       summary = existingEvents.length
         ? 'Which calendar event should I remove? Please tell me the event title or date.'
         : 'Your calendar is empty, so there is nothing to remove.'
     } else {
-      pendingCalendarAction = { action: 'delete', awaiting: 'deleteTarget' }
+      pendingCalendarAction = { action: 'delete', awaiting: 'deleteTarget', createdAt: Date.now() }
       summary = 'I could not find a matching event. Which calendar event should I remove?'
     }
 
@@ -2614,7 +2745,7 @@ async function runCalendarClearer(jobId, question, requestedTimeZone) {
     const timeZone = normalizeTimeZone(requestedTimeZone)
     const existingEvents = await listCalendarEvents()
     if (!isCalendarConfirmation(question)) {
-      pendingCalendarAction = { action: 'clear', awaiting: 'confirmation' }
+      pendingCalendarAction = { action: 'clear', awaiting: 'confirmation', createdAt: Date.now() }
       const summary = existingEvents.length
         ? `This will remove ${existingEvents.length} event${existingEvents.length === 1 ? '' : 's'} from your calendar. Reply "confirm" to continue.`
         : 'Your calendar is already empty. Reply "confirm" if you still want me to clear it.'
@@ -2814,6 +2945,7 @@ Resolve relative dates using the current date and timezone. Do not invent missin
       const awaiting = !title ? 'title' : !startDate ? 'startDate' : 'startTime'
       pendingCalendarAction = {
         action: 'create',
+        createdAt: Date.now(),
         originalQuestion: previousPendingAction?.originalQuestion || question,
         draft: {
           title,
@@ -2881,13 +3013,22 @@ async function handleChat(request, response) {
 
   const requestSequence = ++latestRequestSequence
   const trimmedQuestion = question.trim()
+  const requestMetrics = {
+    interpret_ms: 0,
+    resolve_ms: 0,
+    thinker_ms: null,
+    interpret_swarms_calls: 0,
+    resolve_swarms_calls: 0,
+  }
   const previousConversationKind = latestConversationKind
+  clearUnrepliedPendingState(trimmedQuestion)
   const pendingCalendarConfirmation = pendingCalendarAction?.action === 'clear'
   && isCalendarConfirmation(trimmedQuestion)
   const calendarRequest = pendingCalendarConfirmation
   || isCalendarRequest(trimmedQuestion)
   const noteRequest = isNoteRequest(trimmedQuestion)
   const newsRequest = getNewsRequest(trimmedQuestion)
+  const fastLaneResult = fastLaneMode === 'off' ? null : getTierZeroFastLane(trimmedQuestion)
   const localCalendarRequest = calendarRequest
     && (isCalendarOverviewRequest(trimmedQuestion)
       || isCalendarDeleteRequest(trimmedQuestion)
@@ -2905,15 +3046,20 @@ async function handleChat(request, response) {
     latestConversation,
     latestConversationKind: previousConversationKind,
     latestJobSearch,
+    metrics: requestMetrics,
   }
   const previousConversationWasJobSearch = conversationContext.latestConversationKind === 'job_search'
-  let interpretation = noteRequest
+  const interpretationStartedAt = performance.now()
+  let interpretation = fastLaneMode === 'on' && fastLaneResult
+    ? { intent: fastLaneResult.laneIntent, task: trimmedQuestion, format: null, needsClarification: false }
+    : noteRequest
     ? { intent: 'note', task: trimmedQuestion }
     : newsRequest
       ? { intent: 'news', task: trimmedQuestion }
       : calendarRequest
     ? { intent: 'calendar', task: trimmedQuestion }
     : await interpretConversation(trimmedQuestion, recalledMemories, conversationContext)
+  requestMetrics.interpret_ms = Math.round(performance.now() - interpretationStartedAt)
   const researchDossierFollowUp = Boolean(latestDossier)
     && !calendarRequest
     && !noteRequest
@@ -2935,6 +3081,9 @@ async function handleChat(request, response) {
     noteRequest,
     newsRequest: Boolean(newsRequest),
   })
+  if (fastLaneMode === 'shadow') {
+    logFastLaneShadow(trimmedQuestion, fastLaneResult, interpretation.intent)
+  }
   const jobSearchRequest = interpretation.intent === 'job_search'
   const jobSearchQuery = jobSearchRequest ? getJobSearchQuery(trimmedQuestion) : trimmedQuestion
   const spreadsheetRequested = wantsSpreadsheet(trimmedQuestion)
@@ -2952,7 +3101,10 @@ async function handleChat(request, response) {
   const existingSpreadsheetHasData = existingSpreadsheet
     ? spreadsheetHasUsableData(existingSpreadsheet.spec)
     : false
-  const resolvedRoute = noteRequest || newsRequest
+  const resolveStartedAt = performance.now()
+  const resolvedRoute = fastLaneMode === 'on' && fastLaneResult
+    ? { source: 'new', action: 'none' }
+    : noteRequest || newsRequest
     ? { source: 'new', action: 'create' }
     : calendarRequest
     ? { source: 'new', action: 'create' }
@@ -2963,6 +3115,7 @@ async function handleChat(request, response) {
     interpretation,
     context: {
       allowAgent: true,
+      metrics: requestMetrics,
       candidates: {
         new: { available: true, label: 'New content' },
         latest_response: {
@@ -2993,6 +3146,7 @@ async function handleChat(request, response) {
       },
     },
   })
+  requestMetrics.resolve_ms = Math.round(performance.now() - resolveStartedAt)
   const artifactFlags = deriveArtifactFlags({
     question: trimmedQuestion,
     intent: interpretation.intent,
@@ -3078,6 +3232,7 @@ async function handleChat(request, response) {
     layer: 'fast',
     roles: fastAgents,
   })
+  let thinkerStarted = false
   if (noteRequest) {
     void runNoteManager(jobId, trimmedQuestion)
   } else if (newsRequest) {
@@ -3161,10 +3316,14 @@ async function handleChat(request, response) {
       }
       updateJob(jobId, { status: 'complete', output: artifactAck.text, chunks: [artifactAck.text] })
     } else {
-      void runThinker(jobId, trimmedQuestion, emotion, recalledMemories, interpretation, requestSequence)
+      thinkerStarted = true
+      void runThinker(jobId, trimmedQuestion, emotion, recalledMemories, interpretation, requestSequence, requestMetrics)
     }
   }
-  if (!jobSearchRequest && !calendarRequest) void runMemoryKeeper(trimmedQuestion, recalledMemories)
+  if (!thinkerStarted) logRequestMetrics(jobId, trimmedQuestion, requestMetrics)
+  if (!jobSearchRequest && !calendarRequest && shouldRunMemoryKeeper(trimmedQuestion)) {
+    void runMemoryKeeper(trimmedQuestion, recalledMemories)
+  }
 }
 
 const server = createServer(async (request, response) => {

@@ -773,14 +773,16 @@ export default function App() {
                 : message.research
                 ? (
                   <>
-                    <ResearchReport
-                      dossier={message.research}
-                      jobId={message.jobId}
-                      document={message.document}
-                      spreadsheet={message.spreadsheet}
-                      onCreateDocument={createDocumentFromResearch}
-                      onCreateSpreadsheet={createSpreadsheetFromResearch}
-                    />
+                    {!message.spreadsheet && (
+                      <ResearchReport
+                        dossier={message.research}
+                        jobId={message.jobId}
+                        document={message.document}
+                        spreadsheet={message.spreadsheet}
+                        onCreateDocument={createDocumentFromResearch}
+                        onCreateSpreadsheet={createSpreadsheetFromResearch}
+                      />
+                    )}
                     {message.document && <DocumentAttachment document={message.document} />}
                     {message.spreadsheet && <SpreadsheetAttachment spreadsheet={message.spreadsheet} />}
                   </>
@@ -818,7 +820,7 @@ export default function App() {
               levelRef={levelRef}
               width={560}
               height={92}
-              color="#83b84e"
+              color="#58d8e6"
             />
           </div>
           <div className="voice-actions">
