@@ -413,7 +413,7 @@ function TextTester() {
             <div className={`message-row ${message.role}`} key={`${message.role}-${index}`}>
               <span className="message-label">{message.role === 'user' ? 'You' : 'Jarvis'}</span>
               {!message.news && <div className="assistant-content"><MessageContent text={message.text} /></div>}
-              {message.dossier && <ResearchReport dossier={message.dossier} />}
+              {message.dossier && !message.spreadsheet && <ResearchReport dossier={message.dossier} />}
               {message.jobSearch && <JobSearchResults result={message.jobSearch} />}
               {message.noteResult && <NoteResult result={message.noteResult} />}
               {message.news && <NewsResult result={message.news} />}

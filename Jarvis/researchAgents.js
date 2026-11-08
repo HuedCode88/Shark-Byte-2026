@@ -73,22 +73,23 @@ ${pageBundle}`,
     endpoints.push({ url, source_url: candidate.source_url || '', reason: candidate.reason || '' })
   }
   const fetched = new Map()
-  for (const endpoint of endpoints.slice(0, 3)) {
-    try {
-      const response = await fetch(endpoint.url, {
-        headers: { Accept: 'application/json, text/csv, text/plain' },
-        signal: AbortSignal.timeout(30000),
-      })
-      if (!response.ok) continue
-      const text = (await response.text()).slice(0, 50000)
-      if (!text.trim()) continue
-      fetched.set(endpoint.url, {
-        title: `Data endpoint for ${topic}`,
-        published: '',
-        text,
-      })
-    } catch {
-      continue
+  const responses = await Promise.allSettled(endpoints.slice(0, 3).map(async (endpoint) => {
+    const response = await fetch(endpoint.url, {
+      headers: { Accept: 'application/json, text/csv, text/plain' },
+      signal: AbortSignal.timeout(30000),
+    })
+    if (!response.ok) return null
+    const text = (await response.text()).slice(0, 50000)
+    if (!text.trim()) return null
+    return [endpoint.url, {
+      title: 'Primary dataset (CSV/API)',
+      published: '',
+      text,
+    }]
+  }))
+  for (const result of responses) {
+    if (result.status === 'fulfilled' && result.value) {
+      fetched.set(result.value[0], result.value[1])
     }
   }
   return fetched
