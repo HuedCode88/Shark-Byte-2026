@@ -152,6 +152,16 @@ Return JSON only: {"source":"new|latest_response|existing_document|existing_spre
     const generated = cleanText(generatedText)
     const source = cleanText(sourceText)
     if (!generated) return { verdict: 'fail', issues: ['Generated document is empty.'], confidence: 1, resolvedBy: 'deterministic' }
+    if (mode === 'edit' && source
+      && /\b(?:expand|extend|lengthen|make it longer|more detail|more detailed|add detail|add more)\b/i.test(question)) {
+      const sourceWords = new Set(source.toLowerCase().split(/\W+/).filter((word) => word.length > 4))
+      const generatedWords = new Set(generated.toLowerCase().split(/\W+/))
+      const retainedWords = [...sourceWords].filter((word) => generatedWords.has(word)).length
+      const retention = retainedWords / Math.max(1, sourceWords.size)
+      if (generated.length >= source.length * 1.1 && retention >= 0.35) {
+        return { verdict: 'pass', issues: [], confidence: Math.min(1, retention), resolvedBy: 'deterministic' }
+      }
+    }
     if (mode === 'from_source' && source) {
       const sourceSentences = source.split(/[.!?\n]+/).map((part) => part.trim()).filter((part) => part.length > 20)
       const generatedLower = generated.toLowerCase()

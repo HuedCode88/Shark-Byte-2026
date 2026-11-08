@@ -31,6 +31,7 @@ import {
   wantsSpreadsheetEdit,
 } from './spreadsheets.js'
 import { createResolvers } from './resolvers.js'
+import { deriveArtifactFlags, normalizeArtifactIntent } from './routeGuards.js'
 
 // #determ
 const port = Number(process.env.PORT || 3001)
@@ -48,6 +49,7 @@ let latestArtifact = null
 let latestConversation = null
 let latestConversationKind = null
 let latestJobSearch = null
+let latestDossier = null
 let pendingCalendarAction = null
 let latestRequestSequence = 0
 const maxMemoryEntries = 20
@@ -269,6 +271,11 @@ function isGreeting(question) {
 }
 
 // #determ
+function isResearchDossierFollowUp(question) {
+  return /\b(?:source|sources|citation|citations|link|links|url|urls|reference|references|evidence|findings)\b/i.test(question)
+}
+
+// #determ
 function wantsWebResearch(question) {
   return /\b(research(?: this| the web| on)?|look up|search (?:the )?web|find (?:me )?(?:reliable )?sources|with (?:reliable )?(?:citations|sources)|(?:latest|current|recent|up-to-date) (?:information|data|news|developments|prices|versions|events|sources))\b/i.test(question)
     || /\b(?:what|who|where|when|how|find|tell me|show me)\b.{0,100}\b(?:today|right now|currently|this week|this month)\b/i.test(question)
@@ -415,6 +422,12 @@ const resolvers = createResolvers({
 
 // #determ
 function fallbackInterpretation(question, hasDocument, hasSpreadsheet = false, previousKind = null) {
+  if (isCalendarRequest(question)) {
+    return { intent: 'calendar', task: question, format: null, needsClarification: false }
+  }
+  if (isJobSearchRequest(question)) {
+    return { intent: 'job_search', task: question, format: null, needsClarification: false }
+  }
   if (wantsSpreadsheet(question)) {
     return {
       intent: wantsSpreadsheetResearch(question) ? 'research_spreadsheet' : 'create_spreadsheet',
@@ -493,9 +506,11 @@ function getJobSearchQuery(question) {
 
 // #determ
 function isCalendarSaveRequest(question) {
-  const mentionsEvent = /\b(calendar|event|appointment|meeting|interview|class|flight|deadline|reminder|birthday|lunch|dinner)\b/i.test(question)
+  const mentionsExplicitCalendarTarget = /\b(calendar|appointment|reminder|birthday|flight|lunch|dinner)\b/i.test(question)
+  const mentionsDatedEvent = /\b(event|meeting|interview|class|deadline)\b/i.test(question)
+    && /\b(?:today|tomorrow|tonight|next|on\s+\w+|\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?))\b/i.test(question)
   const saveIntent = /\b(mark\s+(?:it\s+|that\s+|this\s+)?down|put|add|save|schedule|book|create|set up|remind me|remember to)\b/i.test(question)
-  return saveIntent && (mentionsEvent || /\bremind me\b/i.test(question))
+  return saveIntent && (mentionsExplicitCalendarTarget || mentionsDatedEvent || /\bremind me\b/i.test(question))
 }
 
 // #determ
@@ -505,6 +520,7 @@ function isCalendarClarificationReply(question) {
   if (/\b(job|career|weather|code|programming|explain|who is|what is|research)\b/i.test(question)) return false
 
   const text = question.trim()
+  if (pendingCalendarAction.awaiting === 'confirmation') return isCalendarConfirmation(text)
   if (pendingCalendarAction.awaiting === 'title') return text.length <= 160
   if (pendingCalendarAction.awaiting === 'startDate') {
     return /\b(today|tomorrow|tonight|next|this|monday|tuesday|wednesday|thursday|friday|saturday|sunday|january|february|march|april|may|june|july|august|september|october|november|december)\b|\b\d{1,4}[/-]\d{1,2}(?:[/-]\d{2,4})?\b/i.test(text)
@@ -516,15 +532,15 @@ function isCalendarClarificationReply(question) {
 }
 
 // #determ
-function isCalendarRequest(question, previousKind = null) {
-  const mentionsEvent = /\b(calendar|event|appointment|meeting|interview|class|flight|deadline|reminder|birthday|lunch|dinner)\b/i.test(question)
-  const deletesCalendarEvent = isCalendarDeleteRequest(question, previousKind)
+function isCalendarRequest(question) {
+  const mentionsEvent = /\b(calendar|appointment|meeting|interview|flight|deadline|reminder|birthday|lunch|dinner)\b/i.test(question)
+  const deletesCalendarEvent = isCalendarDeleteRequest(question)
   const asksAboutAgenda = isCalendarOverviewRequest(question)
     || /\b(check|what(?:'s| is) on|do i have|what do i have|when is)\b.{0,80}\b(appointments?|meetings?|events?|reminders?)\b/i.test(question)
   const hasCalendarReference = /\b(calendar|schedule|agenda|event|appointment|meeting|interview|deadline|reminder|birthday)\b/i.test(question)
   const hasCalendarPronounFollowUp = /\b(?:cancel|delete|remove|reschedule|move|change|update|edit|what time|when|where is|can['’]?t see|cannot see)\b.{0,40}\b(?:it|that|them|those)\b/i.test(question)
     || /\b(?:it|that|them|those)\b.{0,40}\b(?:cancel|delete|remove|reschedule|move|change|update|edit|what time|when|where is|can['’]?t see|cannot see)\b/i.test(question)
-  const calendarFollowUp = previousKind === 'calendar'
+  const calendarFollowUp = pendingCalendarAction
     && (hasCalendarReference || hasCalendarPronounFollowUp)
 
   return isCalendarClarificationReply(question)
@@ -542,28 +558,54 @@ function isCalendarBulkClearRequest(question) {
 }
 
 // #determ
+function isCalendarConfirmation(question) {
+  return /\b(?:confirm|confirmed|yes|yes please|do it|go ahead|proceed)\b/i.test(question)
+}
+
+// #determ
 function isCalendarDateClearRequest(question) {
   return /\b(?:free\s+up|clear|empty|wipe|remove|delete|cancel)\b.{0,60}\b(?:that|this|the)\s+day\b/i.test(question)
     || /\b(?:free\s+up|clear|empty|wipe|remove|delete|cancel)\b.{0,60}\b(?:day|date)\b/i.test(question)
 }
 
 // #determ
-function isCalendarDeleteRequest(question, previousKind = null) {
+function isCalendarDeleteRequest(question) {
   const asksToDelete = /\b(?:remove|delete|cancel|take off|erase)\b/i.test(question)
   const hasCalendarTarget = /\b(?:calendar|schedule|event|appointment|meeting|interview|birthday|reminder)\b/i.test(question)
   return isCalendarBulkClearRequest(question)
     || isCalendarDateClearRequest(question)
-    || (asksToDelete && (hasCalendarTarget || previousKind === 'calendar'))
+    || (asksToDelete && hasCalendarTarget)
 }
 
 // #determ
 function isCalendarOverviewRequest(question) {
   return /\b(?:show|open|view|display|pull up|bring up)\b.{0,60}\b(?:my\s+)?(?:calendar|schedule|agenda)\b/i.test(question)
     || /\b(?:calendar|schedule|agenda)\b.{0,60}\b(?:show|open|view|display)\b/i.test(question)
+    || /\b(?:what|which|anything)\b.{0,60}\b(?:do i have|have i got|is happening|going on|scheduled)\b.{0,30}\b(?:this|next|coming|upcoming)\s+week\b/i.test(question)
+    || /\b(?:what|which|anything)\b.{0,60}\b(?:do i have|have i got|is happening|going on|scheduled)\b.{0,30}\b(?:today|tomorrow|this weekend)\b/i.test(question)
+}
+
+// #determ
+function addCalendarDays(dateText, days) {
+  const date = new Date(`${dateText}T00:00:00.000Z`)
+  date.setUTCDate(date.getUTCDate() + days)
+  return date.toISOString().slice(0, 10)
+}
+
+// #determ
+function calendarOverviewEndDate(question, today) {
+  if (/\b(?:next|coming|upcoming)\s+week\b/i.test(question)) return addCalendarDays(today, 7)
+  if (/\bthis\s+week\b/i.test(question)) return addCalendarDays(today, 6)
+  if (/\b(?:today|tomorrow)\b/i.test(question)) {
+    return /\btomorrow\b/i.test(question) ? addCalendarDays(today, 1) : today
+  }
+  return ''
 }
 
 // #determ
 function conversationKindForIntent(intent) {
+  if (intent === 'calendar') return 'calendar'
+  if (intent === 'job_search') return 'job_search'
   if (intent === 'programming') return 'programming'
   if (intent.endsWith('_spreadsheet')) return 'spreadsheet'
   if (intent.endsWith('_document') || intent === 'create_document' || intent === 'edit_document') {
@@ -577,13 +619,12 @@ function conversationKindForIntent(intent) {
 function shouldCreateDocumentFromConversation(question, conversation, conversationKind) {
   if (!conversation?.response || conversationKind === 'document') return false
   if (!wantsDocument(question)) return false
-  const referencesPriorResponse = /\b(?:it|this|that|these|those|above|previous|prior|last|what you just said|what you said|your answer|your response|your explanation|the answer|the response|the text|the content|the code|the story|the poem|the lyrics?)\b/i.test(question)
+  const referencesPriorResponse = /\b(?:it|this|that|these|those|above|what you just said|what you said|your answer|your response|your explanation|the answer|the response|the text|the content|the code|the story|the poem|the lyrics?)\b/i.test(question)
+    || /\b(?:last|previous|prior)\s+(?:answer|response|message|reply|one|version)\b/i.test(question)
   const derivesFromPriorResponse = /\b(?:of|from|using|with|based on|turn|put|save|export|convert)\b.{0,50}\b(?:it|this|that|these|those|above|previous|prior|last|what you just said|your answer|your response|the answer|the response|the text|the content)\b/i.test(question)
-  const namesPriorSubject = /\b(?:of|from)\b/i.test(question)
-    && !/\bfrom\s+(?:scratch|nothing|the ground up)\b/i.test(question)
   const isBareDownloadRequest = /\b(?:downloadable|download|save|export)\b/i.test(question)
     && !/\b(?:about|on|for|regarding|concerning)\b/i.test(question)
-  return referencesPriorResponse || derivesFromPriorResponse || namesPriorSubject || isBareDownloadRequest
+  return referencesPriorResponse || derivesFromPriorResponse || isBareDownloadRequest
 }
 
 // #determ
@@ -673,6 +714,7 @@ function parseOrchestratorPlan(rawOutput, question) {
   }
   const validIntents = new Set([
     'answer',
+    'calendar',
     'job_search',
     'programming',
     'create_document',
@@ -733,7 +775,7 @@ async function interpretConversation(question, recalledMemories, context = {}) {
 The user expects an autonomous assistant: infer reasonable details instead of asking unnecessary questions.
 Use the existing document when the message is a follow-up such as "make it longer", "make it three pages", "translate it into French", "change the ending", or "just do it".
 Return JSON only:
-{"intent":"answer|job_search|programming|research|research_document|create_document|edit_document|create_spreadsheet|research_spreadsheet|edit_spreadsheet|clarify","task":"a precise instruction for the next specialist","format":"txt|html|md|pdf|docx|xlsx|csv|null","needsClarification":false}
+{"intent":"answer|calendar|job_search|programming|research|research_document|create_document|edit_document|create_spreadsheet|research_spreadsheet|edit_spreadsheet|clarify","task":"a precise instruction for the next specialist","format":"txt|html|md|pdf|docx|xlsx|csv|null","needsClarification":false}
 Choose research when the answer needs current web information, fact-checking, multiple sources, citations, or the user explicitly asks you to research or look something up. Use answer for general knowledge, explanations, and conversation that do not need web sources. Creating or editing a document remains a document intent.
 Choose research_document when the user asks for web research and also asks to turn the findings into a document or report.
 Choose research_spreadsheet when the user wants a spreadsheet, Excel file, or CSV that needs real-world data, figures, comparisons, or current information. Choose create_spreadsheet when the user supplies data or wants a template, tracker, budget, or planner. Choose edit_spreadsheet for follow-ups that add, remove, sort, or change columns, rows, or sheets of an existing spreadsheet.
@@ -750,7 +792,7 @@ User message:
       [{
         agent_name: 'ConversationOrchestrator',
         system_prompt:
-          'Classify intent conservatively but supportively. Resolve references such as "this", "that", and "it" against the previous conversation context. Route current job searches to job_search, programming questions and code transformations to programming, and current or sourced questions to research. Any request to write, draft, compose, create, or provide written work is a document request unless the user is primarily asking for sourced research. Any follow-up that changes, expands, translates, or reformats an existing document is an edit request. Do not answer the user or refuse the task. Preserve the user’s goal in task. Use null format when unspecified.',
+          'Classify intent conservatively but supportively. Resolve references such as "this", "that", and "it" against the previous conversation context. Route calendar operations to calendar, current job searches to job_search, programming questions and code transformations to programming, and current or sourced questions to research. Any request to write, draft, compose, create, or provide written work is a document request unless the user is primarily asking for sourced research. Any follow-up that changes, expands, translates, or reformats an existing document is an edit request. Do not answer the user or refuse the task. Preserve the user’s goal in task. Use null format when unspecified.',
         model_name: configuredModel('ORCHESTRATOR_MODEL', fallbackModels.orchestrator),
       }],
     )
@@ -801,7 +843,10 @@ async function runThinker(jobId, question, emotion, recalledMemories, interpreta
       return
     }
 
-    const documentNote = wantsDocument(question) || (latestDocumentId && wantsDocumentEdit(question))
+    const documentIntent = interpretation.intent === 'create_document'
+      || interpretation.intent === 'edit_document'
+      || interpretation.intent === 'research_document'
+    const documentNote = documentIntent || (latestDocumentId && wantsDocumentEdit(question))
       ? '\nA written work or file is being prepared on screen. Do not refuse the writing request, brainstorm instead of completing it, or repeat its contents aloud. Mention only that the downloadable document is being prepared or is ready.'
       : ''
     const spreadsheetNote = interpretation.intent.endsWith('_spreadsheet')
@@ -914,6 +959,7 @@ async function runDocumentWriter(
   interpretation = null,
   researchDossier = null,
   sourceConversation = null,
+  writerAttempt = 1,
 ) {
   const setDocument = (document) => updateJob(jobId, { document })
   try {
@@ -976,9 +1022,30 @@ Relevant memories: ${recalledMemories.join('; ') || 'none'}`,
       mode: sourceConversation ? 'from_source' : existingDocument ? 'edit' : 'new',
     })
     if (fidelity.verdict !== 'pass') {
+      if (writerAttempt < 3) {
+        const issues = fidelity.issues.join(' ') || 'The document did not satisfy the requested change.'
+        console.warn(`Document fidelity rejected attempt ${writerAttempt}; retrying writer: ${issues}`)
+        await runDocumentWriter(
+          jobId,
+          question,
+          recalledMemories,
+          existingDocument,
+          {
+            ...interpretation,
+            task: `${interpretation?.task || question}
+
+Revision required after fidelity review: ${issues}
+Revise the document now. Preserve the subject and all useful existing content. Make the requested change substantially and concretely; for a lengthening request, expand multiple sections with meaningful detail instead of only adding a summary.`,
+          },
+          researchDossier,
+          sourceConversation,
+          writerAttempt + 1,
+        )
+        return
+      }
       setDocument({
         status: 'failed',
-        error: `The document failed content verification: ${fidelity.issues.join(' ')}`,
+        error: `The document failed content verification after ${writerAttempt} attempts: ${fidelity.issues.join(' ')}`,
       })
       return
     }
@@ -1972,6 +2039,7 @@ async function runResearcher(jobId, topic, deliverable = null, recalledMemories 
         })
         return
       }
+      latestDossier = dossier
       updateJob(jobId, { status: 'complete', dossier })
       await runDeliverable(jobId, deliverable, topic, recalledMemories, dossier)
       return
@@ -2002,6 +2070,7 @@ async function runResearcher(jobId, topic, deliverable = null, recalledMemories 
         ],
       }
     }
+    latestDossier = dossier
     updateJob(jobId, { status: 'complete', dossier })
     while (jobs.size > maxJobEntries) jobs.delete(jobs.keys().next().value)
     await runDeliverable(jobId, deliverable, topic, recalledMemories, dossier)
@@ -2248,20 +2317,24 @@ async function runCalendarLister(jobId, question, requestedTimeZone) {
       month: '2-digit',
       day: '2-digit',
     }).format(new Date())
+    const endDate = calendarOverviewEndDate(question, today)
     const events = (await listCalendarEvents())
-      .filter((event) => event.startDate >= today)
+      .filter((event) => event.startDate >= today && (!endDate || event.startDate <= endDate))
       .sort((left, right) => `${left.startDate}T${left.startTime || '00:00'}`
         .localeCompare(`${right.startDate}T${right.startTime || '00:00'}`))
       .slice(0, 50)
+    const period = endDate ? (/\b(?:next|coming|upcoming)\s+week\b/i.test(question) ? ' in the next week' : ' in that time period') : ''
     const summary = events.length
-      ? `Here is your calendar. You have ${events.length} upcoming event${events.length === 1 ? '' : 's'}.`
-      : 'Your calendar is empty. Tell me an event and I will add it.'
+      ? `Here is your calendar. You have ${events.length} event${events.length === 1 ? '' : 's'}${period}.`
+      : endDate
+        ? `You have nothing scheduled${period}.`
+        : 'Your calendar is empty. Tell me an event and I will add it.'
     latestConversation = { question, response: summary }
     latestConversationKind = 'calendar'
     updateJob(jobId, {
       status: 'complete',
       output: summary,
-      calendar: { action: 'list', summary, events, timeZone },
+      calendar: { action: 'list', summary, events, timeZone, ...(endDate ? { fromDate: today, toDate: endDate } : {}) },
     })
   } catch (error) {
     console.error('Calendar listing failed:', error)
@@ -2337,6 +2410,20 @@ async function runCalendarClearer(jobId, question, requestedTimeZone) {
   try {
     const timeZone = normalizeTimeZone(requestedTimeZone)
     const existingEvents = await listCalendarEvents()
+    if (!isCalendarConfirmation(question)) {
+      pendingCalendarAction = { action: 'clear', awaiting: 'confirmation' }
+      const summary = existingEvents.length
+        ? `This will remove ${existingEvents.length} event${existingEvents.length === 1 ? '' : 's'} from your calendar. Reply "confirm" to continue.`
+        : 'Your calendar is already empty. Reply "confirm" if you still want me to clear it.'
+      latestConversation = { question, response: summary }
+      latestConversationKind = 'calendar'
+      updateJob(jobId, {
+        status: 'complete',
+        output: summary,
+        calendar: { action: 'confirm_clear', summary, events: existingEvents, timeZone },
+      })
+      return
+    }
     await updateCalendarEvents(() => [])
     const summary = existingEvents.length
       ? `Cleared ${existingEvents.length} event${existingEvents.length === 1 ? '' : 's'} from your calendar.`
@@ -2591,9 +2678,15 @@ async function handleChat(request, response) {
 
   const requestSequence = ++latestRequestSequence
   const trimmedQuestion = question.trim()
-  const calendarRequest = isCalendarRequest(trimmedQuestion, latestConversationKind)
+  const previousConversationKind = latestConversationKind
+  const pendingCalendarConfirmation = pendingCalendarAction?.action === 'clear'
+  && isCalendarConfirmation(trimmedQuestion)
+  const calendarRequest = pendingCalendarConfirmation
+  || isCalendarRequest(trimmedQuestion)
   const localCalendarRequest = calendarRequest
-    && (isCalendarOverviewRequest(trimmedQuestion) || isCalendarDeleteRequest(trimmedQuestion, latestConversationKind))
+    && (isCalendarOverviewRequest(trimmedQuestion)
+      || isCalendarDeleteRequest(trimmedQuestion)
+      || pendingCalendarConfirmation)
   if (!process.env.SWARMS_API_KEY && !localCalendarRequest) {
     sendJson(response, 500, { error: 'SWARMS_API_KEY is not configured on the server.' })
     return
@@ -2605,15 +2698,33 @@ async function handleChat(request, response) {
     latestSpreadsheetId,
     latestArtifact,
     latestConversation,
-    latestConversationKind,
+    latestConversationKind: previousConversationKind,
     latestJobSearch,
   }
   const previousConversationWasJobSearch = conversationContext.latestConversationKind === 'job_search'
-  const interpretation = calendarRequest
+  let interpretation = calendarRequest
     ? { intent: 'calendar', task: trimmedQuestion }
     : await interpretConversation(trimmedQuestion, recalledMemories, conversationContext)
+  const researchDossierFollowUp = Boolean(latestDossier)
+    && !calendarRequest
+    && !wantsSpreadsheet(trimmedQuestion)
+    && isResearchDossierFollowUp(trimmedQuestion)
+  if (researchDossierFollowUp) {
+    interpretation = {
+      ...interpretation,
+      intent: 'research_document',
+      task: `Create a sourced document from the latest verified research. Include the findings, source titles, exact URLs, citations or links, conflicts, and gaps. User request: ${trimmedQuestion}`,
+      format: 'docx',
+    }
+  }
+  interpretation = normalizeArtifactIntent(interpretation, trimmedQuestion, {
+    wantsSpreadsheet: wantsSpreadsheet(trimmedQuestion),
+    researchBackedSpreadsheet: requiresResearchBackedSpreadsheet(trimmedQuestion),
+    calendarRequest,
+  })
   const jobSearchRequest = interpretation.intent === 'job_search'
   const jobSearchQuery = jobSearchRequest ? getJobSearchQuery(interpretation.task || trimmedQuestion) : trimmedQuestion
+  const spreadsheetRequested = wantsSpreadsheet(trimmedQuestion)
   const directProgrammingRequest = interpretation.intent === 'programming'
     && !wantsDocument(trimmedQuestion)
     && !wantsSpreadsheet(trimmedQuestion)
@@ -2630,6 +2741,8 @@ async function handleChat(request, response) {
     : false
   const resolvedRoute = calendarRequest
     ? { source: 'new', action: 'create' }
+    : researchDossierFollowUp
+      ? { source: 'research_dossier', action: 'create' }
     : await resolvers.resolveRoute({
     question: trimmedQuestion,
     interpretation,
@@ -2652,7 +2765,11 @@ async function handleChat(request, response) {
           label: 'Existing spreadsheet',
           preview: existingSpreadsheet?.spec?.title || '',
         },
-        research_dossier: { available: false, label: 'Current research dossier' },
+        research_dossier: {
+          available: Boolean(latestDossier),
+          label: 'Current research dossier',
+          preview: latestDossier?.summary?.slice(0, 500) || '',
+        },
         programming_response: {
           available: conversationContext.latestConversationKind === 'programming',
           label: 'Latest programming response',
@@ -2661,31 +2778,32 @@ async function handleChat(request, response) {
       },
     },
   })
-  const createDocumentFromConversation = resolvedRoute.source === 'latest_response'
-    && resolvedRoute.action === 'create'
-    || shouldCreateDocumentFromConversation(
+  const artifactFlags = deriveArtifactFlags({
+    question: trimmedQuestion,
+    intent: interpretation.intent,
+    route: resolvedRoute,
+    signals: {
+      wantsDocument: wantsDocument(trimmedQuestion),
+      wantsSpreadsheet: spreadsheetRequested,
+      wantsDocumentEdit: wantsDocumentEdit(trimmedQuestion),
+      contextFollowUp: isDocumentContextFollowUp(trimmedQuestion),
+      researchDossierAvailable: Boolean(latestDossier),
+    },
+    hasDocument: Boolean(existingDocument),
+    previousKind: previousConversationKind,
+    directProgramming: directProgrammingRequest,
+    legacyFromConversation: shouldCreateDocumentFromConversation(
       trimmedQuestion,
       conversationContext.latestConversation,
       conversationContext.latestConversationKind,
-    )
-  const explicitNewDocument = wantsDocument(trimmedQuestion)
-    && !isDocumentContextFollowUp(trimmedQuestion)
-  const editingDocument = Boolean(
-    existingDocument
-    && !directProgrammingRequest
-    && !createDocumentFromConversation
-    && !explicitNewDocument
-    && (resolvedRoute.source === 'existing_document'
-      || interpretation.intent === 'edit_document'
-      || wantsDocumentEdit(trimmedQuestion)
-      || isDocumentContextFollowUp(trimmedQuestion)),
-  )
-  const documentRequested = wantsDocument(trimmedQuestion)
-  const creatingDocument = documentRequested
-    && (explicitNewDocument || createDocumentFromConversation || interpretation.intent === 'create_document')
-  const researchDocument = documentRequested
-    && (interpretation.intent === 'research_document'
-      || (explicitNewDocument && wantsWebResearch(trimmedQuestion)))
+    ),
+  })
+  const {
+    createDocumentFromConversation,
+    editingDocument,
+    creatingDocument,
+    researchDocument,
+  } = artifactFlags
   const editingSpreadsheet = Boolean(
     existingSpreadsheet
     && existingSpreadsheetHasData
@@ -2703,6 +2821,7 @@ async function handleChat(request, response) {
   const creatingSpreadsheet = interpretation.intent === 'create_spreadsheet' && !researchSpreadsheet
   const researching = (interpretation.intent === 'research' || researchDocument || researchSpreadsheet)
     && !editingDocument && !editingSpreadsheet
+    && !researchDossierFollowUp
   const spreadsheetDeliverable = researchSpreadsheet || reusablePremadeList
   const deliverable = researchDocument ? 'document' : researchSpreadsheet ? 'spreadsheet' : null
   const mode = jobSearchRequest
@@ -2741,11 +2860,11 @@ async function handleChat(request, response) {
   } else if (calendarRequest) {
     if (isCalendarOverviewRequest(trimmedQuestion)) {
       void runCalendarLister(jobId, trimmedQuestion, timeZone)
-    } else if (isCalendarBulkClearRequest(trimmedQuestion)) {
+    } else if (isCalendarBulkClearRequest(trimmedQuestion) || pendingCalendarConfirmation) {
       void runCalendarClearer(jobId, trimmedQuestion, timeZone)
     } else if (isCalendarDateClearRequest(trimmedQuestion)) {
       void runCalendarManager(jobId, trimmedQuestion, timeZone, conversationContext.latestConversation)
-    } else if (isCalendarDeleteRequest(trimmedQuestion, latestConversationKind)) {
+    } else if (isCalendarDeleteRequest(trimmedQuestion)) {
       void runCalendarDeleter(jobId, trimmedQuestion, timeZone)
     } else {
       void runCalendarManager(jobId, trimmedQuestion, timeZone, conversationContext.latestConversation)
@@ -2786,7 +2905,7 @@ async function handleChat(request, response) {
         recalledMemories,
         editingDocument ? existingDocument : null,
         interpretation,
-        null,
+        researchDossierFollowUp ? latestDossier : null,
         createDocumentFromConversation ? conversationContext.latestConversation : null,
       )
     }
@@ -2800,7 +2919,23 @@ async function handleChat(request, response) {
         interpretation,
       )
     }
-    void runThinker(jobId, trimmedQuestion, emotion, recalledMemories, interpretation, requestSequence)
+    const artifactAck = creatingDocument || editingDocument
+      ? {
+          kind: 'document',
+          text: editingDocument ? 'I am updating your document now.' : 'I am preparing your document now.',
+        }
+      : creatingSpreadsheet || editingSpreadsheet
+        ? { kind: 'spreadsheet', text: 'I am preparing your spreadsheet now.' }
+        : null
+    if (artifactAck) {
+      if (requestSequence === latestRequestSequence) {
+        latestConversation = { question: trimmedQuestion, response: artifactAck.text }
+        latestConversationKind = artifactAck.kind
+      }
+      updateJob(jobId, { status: 'complete', output: artifactAck.text, chunks: [artifactAck.text] })
+    } else {
+      void runThinker(jobId, trimmedQuestion, emotion, recalledMemories, interpretation, requestSequence)
+    }
   }
   if (!jobSearchRequest && !calendarRequest) void runMemoryKeeper(trimmedQuestion, recalledMemories)
 }
