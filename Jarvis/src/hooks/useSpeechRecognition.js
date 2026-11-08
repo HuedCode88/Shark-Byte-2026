@@ -84,10 +84,15 @@ export function useSpeechRecognition({
       setTranscribing(true);
       try {
         const form = new FormData();
-        form.append("audio", new Blob(chunks, { type: recorder.mimeType }));
+        form.append("audio", new Blob(chunks, { type: recorder.mimeType }), "recording.webm");
         const r = await fetch("/api/stt", { method: "POST", body: form });
-        if (!r.ok) throw new Error("Transcription failed");
-        const { text } = await r.json();
+        const result = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          throw new Error(
+            typeof result.error === "string" ? result.error : `Transcription failed (${r.status})`,
+          );
+        }
+        const { text } = result;
         setFinalText(text);
         if (text) onFinishRef.current?.(text);
       } catch (e) {

@@ -9,7 +9,9 @@ export default function SpeechWave({
 }) {
   const canvasRef = useRef(null);
   const activeRef = useRef(active);
-  activeRef.current = active; // lets the animation loop read the latest value
+  useEffect(() => {
+    activeRef.current = active;
+  }, [active]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -25,7 +27,6 @@ export default function SpeechWave({
     let raf;
 
     const draw = () => {
-      const now = performance.now();
       const target = activeRef.current
         ? reduceMotion ? 0.3 : 0.1 + (levelRef?.current ?? 0) * 1.2
         : 0.04;
@@ -52,7 +53,8 @@ export default function SpeechWave({
           const y =
             height / 2 +
             Math.sin(x * freq + t * speed) * (height / 2) * amp * scale * envelope;
-          x === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+          if (x === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
         }
         ctx.stroke();
       });
