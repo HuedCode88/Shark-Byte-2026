@@ -38,6 +38,7 @@ import { critiqueResearchGaps, fetchResearchEndpoints, judgeResearchSources } fr
 // #determ
 const port = Number(process.env.PORT || 3001)
 const calendarFilePath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'data', 'calendar.json')
+const notesFilePath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'data', 'notes.json')
 const swarmsUrl = 'https://api.swarms.world/v1/swarm/completions'
 // #determ
 const jobs = new Map()
@@ -45,6 +46,9 @@ const memories = []
 let calendarEventsCache = null
 let calendarLoadPromise = null
 let calendarWriteQueue = Promise.resolve()
+let notesCache = null
+let notesLoadPromise = null
+let notesWriteQueue = Promise.resolve()
 let latestDocumentId = null
 let latestSpreadsheetId = null
 let latestArtifact = null
@@ -53,6 +57,7 @@ let latestConversationKind = null
 let latestJobSearch = null
 let latestDossier = null
 let pendingCalendarAction = null
+let pendingNoteAction = false
 let latestRequestSequence = 0
 const maxMemoryEntries = 20
 const maxJobEntries = 100
@@ -209,6 +214,56 @@ function updateCalendarEvents(update) {
     return operation
   }
 
+  async function getNotes() {
+    if (notesCache) return notesCache
+    if (!notesLoadPromise) {
+      notesLoadPromise = readFile(notesFilePath, 'utf8')
+        .then((contents) => {
+          const parsed = JSON.parse(contents)
+          notesCache = Array.isArray(parsed) ? parsed : []
+          return notesCache
+        })
+        .catch((error) => {
+          if (error.code !== 'ENOENT') throw error
+          notesCache = []
+          return notesCache
+        })
+    }
+    return notesLoadPromise
+  }
+
+  async function listNotes() {
+    await notesWriteQueue
+    return getNotes()
+  }
+
+  function updateNotes(update) {
+    const operation = notesWriteQueue.then(async () => {
+      const currentNotes = await getNotes()
+      const nextNotes = await update([...currentNotes])
+      await mkdir(path.dirname(notesFilePath), { recursive: true })
+      const temporaryPath = `${notesFilePath}.${randomUUID()}.tmp`
+      await writeFile(temporaryPath, `${JSON.stringify(nextNotes, null, 2)}\n`, 'utf8')
+      await rename(temporaryPath, notesFilePath)
+      notesCache = nextNotes
+      notesLoadPromise = Promise.resolve(nextNotes)
+      return nextNotes
+    })
+    notesWriteQueue = operation.catch((error) => {
+      console.error('Note storage failed:', error)
+    })
+    return operation
+  }
+
+  async function deleteNote(noteId) {
+    let deleted = null
+    await updateNotes((notes) => {
+      deleted = notes.find((note) => note.id === noteId) || null
+      return notes.filter((note) => note.id !== noteId)
+    })
+    return deleted
+  }
+
 // #determ
 function isValidCalendarDate(value) {
     if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
@@ -270,6 +325,40 @@ function readEmotion(question) {
 // #determ
 function isGreeting(question) {
   return /^(hi|hello|hey|yo|hiya|greetings)(\s+jarvis)?[!.?,\s]*$/i.test(question.trim())
+}
+
+function isNoteSaveRequest(question) {
+  return /\b(?:take|make|write|jot|save|record)\b.{0,35}\b(?:a\s+)?note\b/i.test(question)
+    || /\b(?:write|jot)\s+(?:this|that)\s+down\b/i.test(question)
+    || /\bnote\s+that\b/i.test(question)
+    || /\bremember\s+(?:this|that|to)\b/i.test(question)
+}
+
+function isNoteListRequest(question) {
+  return /\b(?:show|list|read|view|open|pull up|what are)\b.{0,50}\b(?:my\s+)?notes?\b/i.test(question)
+    || /\bwhat\s+(?:did|have)\s+i\s+(?:ask you to )?note\b/i.test(question)
+}
+
+function isNoteDeleteRequest(question) {
+  return /\b(?:remove|delete|forget|erase)\b.{0,40}\bnotes?\b/i.test(question)
+}
+
+function isNoteRequest(question) {
+  return pendingNoteAction || isNoteSaveRequest(question) || isNoteListRequest(question) || isNoteDeleteRequest(question)
+}
+
+function extractNoteText(question) {
+  return question
+    .replace(/^(?:(?:hey|okay|please|jarvis|can you|could you)\s+)*(?:(?:take|make|write|jot|save|record)\s+(?:a\s+)?note(?:\s+(?:that|of|to myself))?|(?:write|jot)\s+(?:this|that)\s+down|note\s+that)\s*[:,-]?\s*/i, '')
+    .trim()
+    .slice(0, 4000)
+}
+
+function getNewsRequest(question) {
+  if (!/\b(?:news|headlines|current events|breaking news)\b/i.test(question)) return null
+  const location = question.match(/\b(?:in|for|around|near|about)\s+(.+?)(?=\s+\b(?:today|tonight|currently|right now|news|headlines)\b|[?!;]|$)/i)?.[1]
+    ?.replace(/^(?:the\s+)?/i, '').replace(/[,.\s]+$/, '').trim().slice(0, 100) || ''
+  return { location, question }
 }
 
 // #determ
@@ -549,6 +638,7 @@ function isCalendarClarificationReply(question) {
   if (pendingCalendarAction.awaiting === 'startTime') {
     return /\b(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)?\b|\bno time|all day\b/i.test(text)
   }
+  if (pendingCalendarAction.awaiting === 'deleteTarget') return text.length <= 200
   return text.length <= 200
 }
 
@@ -563,6 +653,8 @@ function isCalendarRequest(question) {
     || /\b(?:it|that|them|those)\b.{0,40}\b(?:cancel|delete|remove|reschedule|move|change|update|edit|what time|when|where is|can['’]?t see|cannot see)\b/i.test(question)
   const calendarFollowUp = pendingCalendarAction
     && (hasCalendarReference || hasCalendarPronounFollowUp)
+  const recentCalendarDelete = latestConversationKind === 'calendar'
+    && /\b(?:delete|remove|cancel|erase|take off)\b/i.test(question)
 
   return isCalendarClarificationReply(question)
     || isCalendarSaveRequest(question)
@@ -570,6 +662,7 @@ function isCalendarRequest(question) {
     || (mentionsEvent && /\b(?:appointment|meeting|interview|birthday|deadline)\b/i.test(question) && /\b(?:tomorrow|today|tonight|next|on\s+\w+|\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?))\b/i.test(question))
     || asksAboutAgenda
     || calendarFollowUp
+    || recentCalendarDelete
 }
 
 // #determ
@@ -595,13 +688,15 @@ function isCalendarDeleteRequest(question) {
   const hasCalendarTarget = /\b(?:calendar|schedule|event|appointment|meeting|interview|birthday|reminder)\b/i.test(question)
   return isCalendarBulkClearRequest(question)
     || isCalendarDateClearRequest(question)
-    || (asksToDelete && hasCalendarTarget)
+    || (asksToDelete && (hasCalendarTarget || latestConversationKind === 'calendar'))
 }
 
 // #determ
 function isCalendarOverviewRequest(question) {
   return /\b(?:show|open|view|display|pull up|bring up)\b.{0,60}\b(?:my\s+)?(?:calendar|schedule|agenda)\b/i.test(question)
     || /\b(?:calendar|schedule|agenda)\b.{0,60}\b(?:show|open|view|display)\b/i.test(question)
+    || /\bwhat(?:'s| is| are)\s+(?:on|in)\s+(?:my\s+)?(?:calendar|schedule|agenda)\b/i.test(question)
+    || /\bwhat\s+do\s+i\s+have\s+(?:on|in)\s+(?:my\s+)?(?:calendar|schedule|agenda)\b/i.test(question)
     || /\b(?:what|which|anything)\b.{0,60}\b(?:do i have|have i got|is happening|going on|scheduled)\b.{0,30}\b(?:this|next|coming|upcoming)\s+week\b/i.test(question)
     || /\b(?:what|which|anything)\b.{0,60}\b(?:do i have|have i got|is happening|going on|scheduled)\b.{0,30}\b(?:today|tomorrow|this weekend)\b/i.test(question)
 }
@@ -2314,6 +2409,98 @@ Evidence:\n${evidence}`,
   }
 }
 
+async function runNoteManager(jobId, question) {
+  try {
+    let notes = await listNotes()
+    let action
+    let note = null
+    let summary
+    if (pendingNoteAction && /\b(?:cancel|never mind|forget it)\b/i.test(question)) {
+      pendingNoteAction = false
+      action = 'cancel'
+      summary = 'Okay, I will not save a note.'
+    } else if (isNoteListRequest(question)) {
+      action = 'list'
+      notes = [...notes].sort((left, right) => right.createdAt.localeCompare(left.createdAt)).slice(0, 100)
+      summary = notes.length ? `You have ${notes.length} saved note${notes.length === 1 ? '' : 's'}.` : 'You do not have any saved notes yet.'
+    } else if (isNoteDeleteRequest(question)) {
+      const target = question.replace(/^(?:please\s+)?(?:remove|delete|forget|erase)\s+(?:(?:the|my)\s+)?(?:note\s+)?(?:about\s+)?/i, '').trim()
+      const matches = notes.filter((saved) => !target || saved.text.toLowerCase().includes(target.toLowerCase()))
+      if (matches.length === 1) {
+        note = await deleteNote(matches[0].id)
+        notes = await listNotes()
+        action = 'delete'
+        summary = 'Removed that note.'
+      } else {
+        action = 'clarify'
+        summary = matches.length > 1 ? 'I found more than one matching note. Please be more specific.' : 'I could not find a matching note.'
+      }
+    } else {
+      const text = extractNoteText(question)
+      if (!text) {
+        pendingNoteAction = true
+        action = 'clarify'
+        summary = 'What would you like me to write down?'
+      } else {
+        pendingNoteAction = false
+        note = { id: randomUUID(), text, createdAt: new Date().toISOString() }
+        notes = await updateNotes((current) => [...current, note])
+        action = 'create'
+        summary = 'Saved your note.'
+      }
+    }
+    if (action !== 'clarify') pendingNoteAction = false
+    latestConversation = { question, response: summary }
+    latestConversationKind = 'note'
+    updateJob(jobId, { status: 'complete', output: summary, noteResult: { action, summary, note, notes } })
+  } catch (error) {
+    console.error('Note manager failed:', error)
+    updateJob(jobId, { status: 'failed', error: `The note request failed: ${error instanceof Error ? error.message : 'Unknown note failure.'}` })
+  }
+}
+
+async function runNews(jobId, request) {
+  try {
+    if (!process.env.FIRECRAWL_API_KEY) {
+      updateJob(jobId, { status: 'failed', error: 'FIRECRAWL_API_KEY is not configured on the server.' })
+      return
+    }
+    const query = `${request.location ? `${request.location} ` : ''}latest news headlines today`
+    const search = await firecrawl('/search', { query, limit: 6, sources: [{ type: 'web' }] })
+    const sources = []
+    const seen = new Set()
+    for (const hit of search?.data?.web || []) {
+      const url = normalizeHttpUrl(hit.url)
+      if (!url || seen.has(url) || isExcludedResearchUrl(url)) continue
+      seen.add(url)
+      sources.push({ title: typeof hit.title === 'string' && hit.title.trim() ? hit.title.trim() : url, url, snippet: typeof hit.description === 'string' ? hit.description.trim().slice(0, 600) : '' })
+      if (sources.length === 5) break
+    }
+    const fallback = sources.length
+      ? `Here are the latest headlines${request.location ? ` for ${request.location}` : ''}: ${sources.map((source) => source.snippet ? `${source.title}: ${source.snippet}` : source.title).join(' ')}`
+      : `I could not find current news${request.location ? ` for ${request.location}` : ''}.`
+    let summary = fallback
+    if (sources.length && process.env.SWARMS_API_KEY) {
+      try {
+        const result = await callSwarms('Jarvis News Briefing', `Summarize these current headlines accurately. Use only the supplied titles and snippets and do not invent details:\n${JSON.stringify(sources)}`, [{
+          agent_name: 'NewsBriefing',
+          system_prompt: 'Return a concise plain-text news briefing grounded only in supplied sources.',
+          model_name: configuredModel('NEWS_MODEL', fallbackModels.delivery),
+        }], 'SequentialWorkflow')
+        summary = getOutput(result) || fallback
+      } catch (error) {
+        console.warn('News summarization failed; using source snippets:', error)
+      }
+    }
+    latestConversation = { question: request.question, response: summary }
+    latestConversationKind = 'news'
+    updateJob(jobId, { status: 'complete', output: summary, news: { query, summary, sources, searchedAt: new Date().toISOString() } })
+  } catch (error) {
+    console.error('News lookup failed:', error)
+    updateJob(jobId, { status: 'failed', error: `The news request failed: ${error instanceof Error ? error.message : 'Unknown news failure.'}` })
+  }
+}
+
 // #determ
 async function runCalendarLister(jobId, question, requestedTimeZone) {
   try {
@@ -2356,10 +2543,12 @@ async function runCalendarDeleter(jobId, question, requestedTimeZone) {
     const timeZone = normalizeTimeZone(requestedTimeZone)
     const existingEvents = await listCalendarEvents()
     const targetMatch = question.match(/\b(?:remove|delete|cancel|take off|erase)\s+(?:(?:the|my)\s+)?(.+?)(?:\s+from\s+(?:my\s+)?(?:calendar|schedule)\b|$)/i)
-    const target = (targetMatch?.[1] || '')
+    const target = (targetMatch?.[1] || (pendingCalendarAction?.action === 'delete' ? question : ''))
       .replace(/\b(?:please|event|appointment|meeting|calendar|schedule)\b/gi, ' ')
       .trim()
-    const normalizedTarget = target.toLowerCase().replace(/'s\b/g, '').replace(/[^a-z0-9]+/g, ' ').trim()
+    const normalizedTarget = /^(?:it|that|this|them|those)$/i.test(target)
+      ? ''
+      : target.toLowerCase().replace(/'s\b/g, '').replace(/[^a-z0-9]+/g, ' ').trim()
     const targetWords = normalizedTarget.split(/\s+/).filter((word) => word.length > 1)
     const matches = targetWords.length
       ? existingEvents.filter((event) => {
@@ -2380,9 +2569,16 @@ async function runCalendarDeleter(jobId, question, requestedTimeZone) {
       action = 'delete'
       summary = `Removed ${deleted.title} from your calendar.`
     } else if (matches.length > 1) {
-      summary = `I found ${matches.length} matching events. Choose the one to remove.`
+      pendingCalendarAction = { action: 'delete', awaiting: 'deleteTarget' }
+      summary = `I found ${matches.length} matching events. Which one should I remove?`
+    } else if (!targetWords.length) {
+      pendingCalendarAction = { action: 'delete', awaiting: 'deleteTarget' }
+      summary = existingEvents.length
+        ? 'Which calendar event should I remove? Please tell me the event title or date.'
+        : 'Your calendar is empty, so there is nothing to remove.'
     } else {
-      summary = 'I could not find a matching event. Here is your calendar.'
+      pendingCalendarAction = { action: 'delete', awaiting: 'deleteTarget' }
+      summary = 'I could not find a matching event. Which calendar event should I remove?'
     }
 
     const today = new Intl.DateTimeFormat('en-CA', {
@@ -2399,7 +2595,7 @@ async function runCalendarDeleter(jobId, question, requestedTimeZone) {
 
     latestConversation = { question, response: summary }
     latestConversationKind = 'calendar'
-    pendingCalendarAction = null
+    if (action === 'delete' || !existingEvents.length) pendingCalendarAction = null
     updateJob(jobId, {
       status: 'complete',
       output: summary,
@@ -2690,11 +2886,13 @@ async function handleChat(request, response) {
   && isCalendarConfirmation(trimmedQuestion)
   const calendarRequest = pendingCalendarConfirmation
   || isCalendarRequest(trimmedQuestion)
+  const noteRequest = isNoteRequest(trimmedQuestion)
+  const newsRequest = getNewsRequest(trimmedQuestion)
   const localCalendarRequest = calendarRequest
     && (isCalendarOverviewRequest(trimmedQuestion)
       || isCalendarDeleteRequest(trimmedQuestion)
       || pendingCalendarConfirmation)
-  if (!process.env.SWARMS_API_KEY && !localCalendarRequest) {
+  if (!process.env.SWARMS_API_KEY && !localCalendarRequest && !noteRequest && !newsRequest) {
     sendJson(response, 500, { error: 'SWARMS_API_KEY is not configured on the server.' })
     return
   }
@@ -2709,11 +2907,17 @@ async function handleChat(request, response) {
     latestJobSearch,
   }
   const previousConversationWasJobSearch = conversationContext.latestConversationKind === 'job_search'
-  let interpretation = calendarRequest
+  let interpretation = noteRequest
+    ? { intent: 'note', task: trimmedQuestion }
+    : newsRequest
+      ? { intent: 'news', task: trimmedQuestion }
+      : calendarRequest
     ? { intent: 'calendar', task: trimmedQuestion }
     : await interpretConversation(trimmedQuestion, recalledMemories, conversationContext)
   const researchDossierFollowUp = Boolean(latestDossier)
     && !calendarRequest
+    && !noteRequest
+    && !newsRequest
     && !wantsSpreadsheet(trimmedQuestion)
     && isResearchDossierFollowUp(trimmedQuestion)
   if (researchDossierFollowUp) {
@@ -2728,6 +2932,8 @@ async function handleChat(request, response) {
     wantsSpreadsheet: wantsSpreadsheet(trimmedQuestion),
     researchBackedSpreadsheet: requiresResearchBackedSpreadsheet(trimmedQuestion),
     calendarRequest,
+    noteRequest,
+    newsRequest: Boolean(newsRequest),
   })
   const jobSearchRequest = interpretation.intent === 'job_search'
   const jobSearchQuery = jobSearchRequest ? getJobSearchQuery(trimmedQuestion) : trimmedQuestion
@@ -2746,7 +2952,9 @@ async function handleChat(request, response) {
   const existingSpreadsheetHasData = existingSpreadsheet
     ? spreadsheetHasUsableData(existingSpreadsheet.spec)
     : false
-  const resolvedRoute = calendarRequest
+  const resolvedRoute = noteRequest || newsRequest
+    ? { source: 'new', action: 'create' }
+    : calendarRequest
     ? { source: 'new', action: 'create' }
     : researchDossierFollowUp
       ? { source: 'research_dossier', action: 'create' }
@@ -2831,7 +3039,11 @@ async function handleChat(request, response) {
     && !researchDossierFollowUp
   const spreadsheetDeliverable = researchSpreadsheet || reusablePremadeList
   const deliverable = researchDocument ? 'document' : researchSpreadsheet ? 'spreadsheet' : null
-  const mode = jobSearchRequest
+  const mode = noteRequest
+    ? 'note'
+    : newsRequest
+      ? 'news'
+      : jobSearchRequest
     ? 'job_search'
     : calendarRequest
       ? 'calendar'
@@ -2844,7 +3056,11 @@ async function handleChat(request, response) {
         : researching
           ? 'research'
           : 'chat'
-  const status = jobSearchRequest
+  const status = noteRequest
+    ? 'managing_notes'
+    : newsRequest
+      ? 'researching_news'
+      : jobSearchRequest
     ? 'searching_jobs'
     : calendarRequest
       ? 'managing_calendar'
@@ -2862,7 +3078,11 @@ async function handleChat(request, response) {
     layer: 'fast',
     roles: fastAgents,
   })
-  if (jobSearchRequest) {
+  if (noteRequest) {
+    void runNoteManager(jobId, trimmedQuestion)
+  } else if (newsRequest) {
+    void runNews(jobId, newsRequest)
+  } else if (jobSearchRequest) {
     void runJobSearcher(jobId, jobSearchQuery)
   } else if (calendarRequest) {
     if (isCalendarOverviewRequest(trimmedQuestion)) {
@@ -2954,6 +3174,16 @@ const server = createServer(async (request, response) => {
     const prefix = request.url.startsWith('/api/text-chat/') ? '/api/text-chat/' : '/api/chat/'
     const job = jobs.get(request.url.slice(prefix.length))
     sendJson(response, job ? 200 : 404, job || { error: 'Chat job not found.' })
+    return
+  }
+  if (request.method === 'GET' && request.url === '/api/notes') {
+    sendJson(response, 200, { notes: await listNotes() })
+    return
+  }
+  if (request.method === 'DELETE' && request.url.startsWith('/api/notes/')) {
+    const noteId = request.url.slice('/api/notes/'.length)
+    const deleted = await deleteNote(noteId)
+    sendJson(response, deleted ? 200 : 404, deleted ? { note: deleted } : { error: 'Note not found.' })
     return
   }
 

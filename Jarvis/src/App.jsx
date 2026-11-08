@@ -13,6 +13,21 @@ function MessageContent({ text }) {
   })
 }
 
+function cleanNewsSnippet(value) {
+  return String(value || '')
+    .replace(/!\[[^\]]*\](?:\([^)]*\))?/g, '')
+    .replace(/\[([^\]]+)\](?:\([^)]*\))?/g, '$1')
+    .replace(/https?:\/\/\S+/g, '')
+    .replace(/[()[\]]/g, '')
+    .replace(/\\+|[#*_`]/g, '')
+    .replace(/\b(?:Your briefing|Top stories|FOR SUBSCRIBERS|HOT TOPICS|CNN Headlines|More Top Stories|Developing)\b/gi, '')
+    .replace(/\b_chevron_right_\b/gi, '')
+    .replace(/\s*[-–—]\s*(?=[A-Z])/g, '. ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 360)
+}
+
 function CodeBlock({ language, code }) {
   const [copied, setCopied] = useState(false)
 
@@ -364,6 +379,38 @@ function JobSearchResults({ result }) {
   )
 }
 
+function NoteResult({ result }) {
+  return <section className="research-report" aria-label="Saved notes">
+    <header className="research-header"><span className="research-label">NOTES</span><h3>{result.summary}</h3></header>
+    {result.note && <p className="research-summary">{result.note.text}</p>}
+    {Array.isArray(result.notes) && <ul>{result.notes.map((note) => <li key={note.id}>{note.text}</li>)}</ul>}
+  </section>
+}
+
+function NewsResult({ result }) {
+  const briefingLines = String(result.summary || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+  const briefingItems = briefingLines.filter((line) => /^\d+[.)]\s+/.test(line))
+    .map((line) => line.replace(/^\d+[.)]\s+/, '').replace(/\*\*/g, ''))
+  return <section className="news-report" aria-label="Current news">
+    <header className="research-header"><span className="research-label">CURRENT NEWS</span><h3>Headlines</h3></header>
+    <div className="news-briefing">
+      {briefingItems.length > 0
+        ? <ol>{briefingItems.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}</ol>
+        : <p>{String(result.summary || '').replace(/\*\*/g, '')}</p>}
+    </div>
+    {Array.isArray(result.sources) && result.sources.length > 0 && (
+      <div className="news-sources">
+        {result.sources.map((source) => (
+          <article className="research-source" key={source.url}>
+            <h5><a href={source.url} target="_blank" rel="noreferrer">{source.title}</a></h5>
+            {cleanNewsSnippet(source.snippet) && <p>{cleanNewsSnippet(source.snippet)}</p>}
+          </article>
+        ))}
+      </div>
+    )}
+  </section>
+}
+
 export default function App() {
   const [messages, setMessages] = useState([])
   const [isLoading, setIsLoading] = useState(false)
@@ -585,6 +632,8 @@ export default function App() {
                 role: 'assistant',
                 text: job.jobSearch.summary,
                 jobSearch: job.jobSearch,
+                noteResult: job.noteResult,
+                news: job.news,
                 calendar: job.calendar,
                 jobId,
               }])
@@ -634,6 +683,8 @@ export default function App() {
                 role: 'assistant',
                 text: job.output,
                 calendar: job.calendar,
+                noteResult: job.noteResult,
+                news: job.news,
                 document: job.document,
                 spreadsheet: job.spreadsheet?.status === 'ready' || job.spreadsheet?.status === 'failed'
                   ? job.spreadsheet
@@ -711,10 +762,14 @@ export default function App() {
               key={`${message.role}-${index}`}
             >
               <span className="message-label">
-                {message.jobSearch ? 'Jobs' : message.research ? 'Research' : 'Jarvis'}
+                {message.jobSearch ? 'Jobs' : message.news ? 'News' : message.noteResult ? 'Notes' : message.research ? 'Research' : 'Jarvis'}
               </span>
               {message.jobSearch
                 ? <JobSearchResults result={message.jobSearch} />
+                : message.noteResult
+                ? <NoteResult result={message.noteResult} />
+                : message.news
+                ? <NewsResult result={message.news} />
                 : message.research
                 ? (
                   <>
@@ -732,9 +787,11 @@ export default function App() {
                 )
                 : (
                   <>
-                    <p className={message.role === 'assistant' ? 'assistant-content' : undefined}>
-                      <MessageContent text={message.text} />
-                    </p>
+                    {!message.news && (
+                      <p className={message.role === 'assistant' ? 'assistant-content' : undefined}>
+                        <MessageContent text={message.text} />
+                      </p>
+                    )}
                     {message.spreadsheet && <SpreadsheetAttachment spreadsheet={message.spreadsheet} />}
                   </>
                 )}

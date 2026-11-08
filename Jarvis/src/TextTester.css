@@ -110,6 +110,12 @@ h2 { margin: 10px 0 8px; font: 500 clamp(30px, 5vw, 46px)/1.05 Georgia, serif; l
 .code-block { max-width: 100%; margin: 0; padding: 14px; overflow: auto; color: #e8f4dc; font: 13px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre; tab-size: 4; }
 .code-block code { font: inherit; }
 .research-report { padding: 18px; border: 1px solid var(--line); border-radius: 14px; background: #edf3ee; text-align: left; }
+.news-report { max-width: 100%; padding: 22px; border: 1px solid var(--line); border-radius: 16px; background: #edf3ee; text-align: left; }
+.news-briefing { color: var(--ink); font-size: 15px; line-height: 1.65; }
+.news-briefing ol { display: grid; gap: 12px; margin: 0; padding-left: 24px; }
+.news-briefing li { padding-left: 5px; }
+.news-briefing p { margin: 0; padding: 0; background: transparent; white-space: pre-wrap; }
+.news-sources { display: grid; gap: 10px; margin-top: 20px; }
 .job-search-results { padding: 18px; border: 1px solid var(--line); border-radius: 14px; background: #edf3ee; text-align: left; }
 .job-search-header { margin-bottom: 14px; }
 .job-search-header h3 { margin: 5px 0 0; color: var(--ink); font: 500 21px/1.25 Georgia, serif; }

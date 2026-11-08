@@ -38,6 +38,21 @@ function MessageContent({ text }) {
   })
 }
 
+function cleanNewsSnippet(value) {
+  return String(value || '')
+    .replace(/!\[[^\]]*\](?:\([^)]*\))?/g, '')
+    .replace(/\[([^\]]+)\](?:\([^)]*\))?/g, '$1')
+    .replace(/https?:\/\/\S+/g, '')
+    .replace(/[()[\]]/g, '')
+    .replace(/\\+|[#*_`]/g, '')
+    .replace(/\b(?:Your briefing|Top stories|FOR SUBSCRIBERS|HOT TOPICS|CNN Headlines|More Top Stories|Developing)\b/gi, '')
+    .replace(/\b_chevron_right_\b/gi, '')
+    .replace(/\s*[-–—]\s*(?=[A-Z])/g, '. ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 360)
+}
+
 function DocumentAttachment({ document }) {
   if (document.status === 'pending') {
     return <div className="document-card pending">Preparing your document preview...</div>
@@ -110,6 +125,48 @@ function ResearchReport({ dossier }) {
             ))}
           </div>
         </section>
+      )}
+    </section>
+  )
+}
+
+function NoteResult({ result }) {
+  return (
+    <section className="research-report" aria-label="Saved notes">
+      <header className="research-header"><span className="research-label">NOTES</span><h3>{result.summary}</h3></header>
+      {result.note && <p className="research-summary">{result.note.text}</p>}
+      {Array.isArray(result.notes) && result.notes.length > 0 && (
+        <ul>{result.notes.map((note) => <li key={note.id}>{note.text}</li>)}</ul>
+      )}
+    </section>
+  )
+}
+
+function NewsResult({ result }) {
+  const briefingLines = String(result.summary || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+  const briefingTitle = briefingLines.find((line) => !/^[*#\d\s.)-]+$/.test(line))
+  const briefingItems = briefingLines
+    .filter((line) => /^\d+[.)]\s+/.test(line))
+    .map((line) => line.replace(/^\d+[.)]\s+/, '').replace(/\*\*/g, ''))
+  return (
+    <section className="news-report" aria-label="Current news">
+      <header className="research-header"><span className="research-label">CURRENT NEWS</span><h3>Headlines</h3></header>
+      <div className="news-briefing">
+        {briefingTitle && !/^\*\*News Briefing:\*\*$/i.test(briefingTitle) && <p className="news-intro">{briefingTitle.replace(/\*\*/g, '')}</p>}
+        {briefingItems.length > 0
+          ? <ol>{briefingItems.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}</ol>
+          : <p>{String(result.summary || '').replace(/\*\*/g, '')}</p>}
+      </div>
+      {Array.isArray(result.sources) && result.sources.length > 0 && (
+        <div className="news-sources">
+          {result.sources.map((source) => <article className="research-source" key={source.url}>
+            <h5><a href={source.url} target="_blank" rel="noreferrer">{source.title}</a></h5>
+            {cleanNewsSnippet(source.snippet) && <p>{cleanNewsSnippet(source.snippet)}</p>}
+          </article>)}
+        </div>
       )}
     </section>
   )
@@ -296,6 +353,8 @@ function TextTester() {
           spreadsheet: job.spreadsheet,
           calendar: job.calendar,
           jobSearch: job.jobSearch,
+          noteResult: job.noteResult,
+          news: job.news,
           jobId: data.jobId,
         }
         const documentDone = !job.document
@@ -353,9 +412,11 @@ function TextTester() {
           {messages.map((message, index) => (
             <div className={`message-row ${message.role}`} key={`${message.role}-${index}`}>
               <span className="message-label">{message.role === 'user' ? 'You' : 'Jarvis'}</span>
-              <div className="assistant-content"><MessageContent text={message.text} /></div>
+              {!message.news && <div className="assistant-content"><MessageContent text={message.text} /></div>}
               {message.dossier && <ResearchReport dossier={message.dossier} />}
               {message.jobSearch && <JobSearchResults result={message.jobSearch} />}
+              {message.noteResult && <NoteResult result={message.noteResult} />}
+              {message.news && <NewsResult result={message.news} />}
               {message.document && <DocumentAttachment document={message.document} />}
               {message.spreadsheet && <SpreadsheetAttachment spreadsheet={message.spreadsheet} />}
               {message.calendar && <CalendarAttachment calendar={message.calendar} />}
