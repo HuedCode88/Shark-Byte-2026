@@ -29,6 +29,7 @@ import {
   wantsSpreadsheet,
   wantsSpreadsheetEdit,
 } from './spreadsheets.js'
+import { createResolvers } from './resolvers.js'
 
 const port = Number(process.env.PORT || 3001)
 const swarmsUrl = 'https://api.swarms.world/v1/swarm/completions'
@@ -252,6 +253,15 @@ Previous assistant response:
 ${conversation.response.slice(0, 16000)}`
 }
 
+function documentSpecText(spec) {
+  return (spec?.blocks || []).flatMap((block) => {
+    if (block.type === 'divider') return ['']
+    if (Array.isArray(block.items)) return block.items
+    if (Array.isArray(block.headers)) return [block.headers.join(' '), ...(block.rows || []).map((row) => row.join(' '))]
+    return [block.text || '']
+  }).join('\n')
+}
+
 // ============================================================================
 // AGENTS
 // The Conversation Orchestrator interprets intent first, then routes the request
@@ -278,6 +288,12 @@ async function callSwarms(name, task, agents, swarmType = 'MixtureOfAgents') {
   if (!swarmsResponse.ok) throw new Error(getErrorMessage(result, swarmsResponse.status))
   return result
 }
+
+const resolvers = createResolvers({
+  callSwarms,
+  getOutput,
+  getModel: configuredModel,
+})
 
 function fallbackInterpretation(question, hasDocument, hasSpreadsheet = false, previousKind = null) {
   if (wantsSpreadsheet(question)) {
@@ -363,18 +379,6 @@ function conversationKindForIntent(intent) {
   return intent
 }
 
-function shouldCreateDocumentFromConversation(question, conversation, conversationKind) {
-  if (!conversation?.response || conversationKind === 'document') return false
-  if (!wantsDocument(question)) return false
-  const referencesPriorResponse = /\b(?:it|this|that|these|those|above|previous|prior|last|what you just said|what you said|your answer|your response|your explanation|the answer|the response|the text|the content|the code|the story|the poem|the lyrics?)\b/i.test(question)
-  const derivesFromPriorResponse = /\b(?:of|from|using|with|based on|turn|put|save|export|convert)\b.{0,50}\b(?:it|this|that|these|those|above|previous|prior|last|what you just said|your answer|your response|the answer|the response|the text|the content)\b/i.test(question)
-  const namesPriorSubject = /\b(?:of|from)\b/i.test(question)
-    && !/\bfrom\s+(?:scratch|nothing|the ground up)\b/i.test(question)
-  const isBareDownloadRequest = /\b(?:downloadable|download|save|export)\b/i.test(question)
-    && !/\b(?:about|on|for|regarding|concerning)\b/i.test(question)
-  return referencesPriorResponse || derivesFromPriorResponse || namesPriorSubject || isBareDownloadRequest
-}
-
 function firstJobString(job, ...keys) {
   for (const key of keys) {
     if (typeof job?.[key] === 'string' && job[key].trim()) return job[key].trim()
@@ -457,6 +461,7 @@ function parseOrchestratorPlan(rawOutput, question) {
   }
   const validIntents = new Set([
     'answer',
+    'job_search',
     'programming',
     'create_document',
     'edit_document',
@@ -516,10 +521,11 @@ async function interpretConversation(question, recalledMemories, context = {}) {
 The user expects an autonomous assistant: infer reasonable details instead of asking unnecessary questions.
 Use the existing document when the message is a follow-up such as "make it longer", "make it three pages", "translate it into French", "change the ending", or "just do it".
 Return JSON only:
-{"intent":"answer|programming|research|research_document|create_document|edit_document|create_spreadsheet|research_spreadsheet|edit_spreadsheet|clarify","task":"a precise instruction for the next specialist","format":"txt|html|md|pdf|docx|xlsx|csv|null","needsClarification":false}
+{"intent":"answer|job_search|programming|research|research_document|create_document|edit_document|create_spreadsheet|research_spreadsheet|edit_spreadsheet|clarify","task":"a precise instruction for the next specialist","format":"txt|html|md|pdf|docx|xlsx|csv|null","needsClarification":false}
 Choose research when the answer needs current web information, fact-checking, multiple sources, citations, or the user explicitly asks you to research or look something up. Use answer for general knowledge, explanations, and conversation that do not need web sources. Creating or editing a document remains a document intent.
 Choose research_document when the user asks for web research and also asks to turn the findings into a document or report.
 Choose research_spreadsheet when the user wants a spreadsheet, Excel file, or CSV that needs real-world data, figures, comparisons, or current information. Choose create_spreadsheet when the user supplies data or wants a template, tracker, budget, or planner. Choose edit_spreadsheet for follow-ups that add, remove, sort, or change columns, rows, or sheets of an existing spreadsheet.
+Choose job_search when the user asks to find, search for, or list current jobs, roles, openings, careers, or vacancies.
 Existing spreadsheet available: ${hasSpreadsheet ? 'yes' : 'no'}
 Programming questions should use programming. Follow-ups that translate or modify previous code should remain programming requests.
 Existing document available: ${hasDocument ? 'yes' : 'no'}
@@ -532,7 +538,7 @@ User message:
       [{
         agent_name: 'ConversationOrchestrator',
         system_prompt:
-          'Classify intent conservatively but supportively. Resolve references such as "this", "that", and "it" against the previous conversation context. Route programming questions and code transformations to programming. Choose research when up-to-date web evidence or citations are needed. Any request to write, draft, compose, create, or provide written work is a document request unless the user is primarily asking for sourced research. Any follow-up that changes, expands, translates, or reformats an existing document is an edit request. Do not answer the user or refuse the task. Preserve the user’s goal in task. Use null format when unspecified.',
+          'Classify intent conservatively but supportively. Resolve references such as "this", "that", and "it" against the previous conversation context. Route current job searches to job_search, programming questions and code transformations to programming, and current or sourced questions to research. Any request to write, draft, compose, create, or provide written work is a document request unless the user is primarily asking for sourced research. Any follow-up that changes, expands, translates, or reformats an existing document is an edit request. Do not answer the user or refuse the task. Preserve the user’s goal in task. Use null format when unspecified.',
         model_name: configuredModel('ORCHESTRATOR_MODEL', fallbackModels.orchestrator),
       }],
     )
@@ -752,6 +758,19 @@ Relevant memories: ${recalledMemories.join('; ') || 'none'}`,
       setDocument({ status: 'failed', error: `The document could not be structured: ${parsed.errors.join(' ')}` })
       return
     }
+    const fidelity = await resolvers.verifyFidelity({
+      question,
+      generatedText: documentSpecText(parsed.spec),
+      sourceText: sourceConversation?.response || (existingDocument ? documentSpecText(existingDocument.spec) : ''),
+      mode: sourceConversation ? 'from_source' : existingDocument ? 'edit' : 'new',
+    })
+    if (fidelity.verdict !== 'pass') {
+      setDocument({
+        status: 'failed',
+        error: `The document failed content verification: ${fidelity.issues.join(' ')}`,
+      })
+      return
+    }
     const savedDocument = saveDocument(parsed.spec)
     latestDocumentId = savedDocument.id
     latestArtifact = 'document'
@@ -875,7 +894,8 @@ async function runSpreadsheetWriter(
 ) {
   const setSpreadsheet = (spreadsheet) => updateJob(jobId, { spreadsheet })
   const reserveSources = Boolean(researchDossier)
-  const quantitativeResearch = researchDossier && spreadsheetRequiresQuantitativeData(question)
+  const researchTopic = researchDossier?.topic || question
+  const quantitativeResearch = researchDossier && spreadsheetRequiresQuantitativeData(researchTopic)
   try {
     if (!process.env.SWARMS_API_KEY) {
       setSpreadsheet({ status: 'failed', error: 'SWARMS_API_KEY is not configured on the server.' })
@@ -990,6 +1010,13 @@ Relevant memories: ${recalledMemories.join('; ') || 'none'}`,
         return
       }
     }
+    if (researchDossier && !spreadsheetHasUsableData(spec)) {
+      setSpreadsheet({
+        status: 'failed',
+        error: 'The spreadsheet was not published because it contained no populated data rows.',
+      })
+      return
+    }
     const saved = saveSpreadsheet(spec, review)
     latestSpreadsheetId = saved.id
     latestArtifact = 'spreadsheet'
@@ -1019,7 +1046,7 @@ async function runDeliverable(jobId, deliverable, topic, recalledMemories, dossi
   } else if (deliverable === 'spreadsheet') {
     await runSpreadsheetWriter(
       jobId,
-      `Create a spreadsheet of the researched data about ${topic}.`,
+      `Create a spreadsheet of the researched data about ${topic}. Preserve the requested subject, measurements, dates, and units exactly.`,
       recalledMemories,
       null,
       { intent: 'research_spreadsheet', task: `Create a spreadsheet of the researched data about ${topic}.` },
@@ -1998,14 +2025,10 @@ async function handleChat(request, response) {
     return
   }
 
+  const requestSequence = ++latestRequestSequence
   const trimmedQuestion = question.trim()
   const emotion = readEmotion(trimmedQuestion)
   const recalledMemories = retrieveMemories()
-  const jobSearchRequest = isJobSearchRequest(trimmedQuestion)
-  const jobSearchQuery = jobSearchRequest ? getJobSearchQuery(trimmedQuestion) : trimmedQuestion
-  const directProgrammingRequest = isProgrammingRequest(trimmedQuestion)
-    && !wantsDocument(trimmedQuestion)
-    && !wantsSpreadsheet(trimmedQuestion)
   const conversationContext = {
     latestDocumentId,
     latestSpreadsheetId,
@@ -2015,16 +2038,12 @@ async function handleChat(request, response) {
     latestJobSearch,
   }
   const previousConversationWasJobSearch = conversationContext.latestConversationKind === 'job_search'
-  const createDocumentFromConversation = shouldCreateDocumentFromConversation(
-    trimmedQuestion,
-    conversationContext.latestConversation,
-    conversationContext.latestConversationKind,
-  )
-  const interpretation = jobSearchRequest
-    ? { intent: 'job_search', task: trimmedQuestion }
-    : directProgrammingRequest
-      ? { intent: 'programming', task: trimmedQuestion }
-    : await interpretConversation(trimmedQuestion, recalledMemories, conversationContext)
+  const interpretation = await interpretConversation(trimmedQuestion, recalledMemories, conversationContext)
+  const jobSearchRequest = interpretation.intent === 'job_search'
+  const jobSearchQuery = jobSearchRequest ? getJobSearchQuery(interpretation.task || trimmedQuestion) : trimmedQuestion
+  const directProgrammingRequest = interpretation.intent === 'programming'
+    && !wantsDocument(trimmedQuestion)
+    && !wantsSpreadsheet(trimmedQuestion)
   latestConversationKind = conversationKindForIntent(interpretation.intent)
   const jobId = randomUUID()
   const existingDocument = conversationContext.latestDocumentId
@@ -2036,6 +2055,39 @@ async function handleChat(request, response) {
   const existingSpreadsheetHasData = existingSpreadsheet
     ? spreadsheetHasUsableData(existingSpreadsheet.spec)
     : false
+  const resolvedRoute = await resolvers.resolveRoute({
+    question: trimmedQuestion,
+    interpretation,
+    context: {
+      allowAgent: true,
+      candidates: {
+        new: { available: true, label: 'New content' },
+        latest_response: {
+          available: Boolean(conversationContext.latestConversation?.response),
+          label: 'Latest assistant response',
+          preview: conversationContext.latestConversation?.response?.slice(0, 500) || '',
+        },
+        existing_document: {
+          available: Boolean(existingDocument),
+          label: 'Existing document',
+          preview: existingDocument ? documentSpecText(existingDocument.spec).slice(0, 500) : '',
+        },
+        existing_spreadsheet: {
+          available: Boolean(existingSpreadsheet),
+          label: 'Existing spreadsheet',
+          preview: existingSpreadsheet?.spec?.title || '',
+        },
+        research_dossier: { available: false, label: 'Current research dossier' },
+        programming_response: {
+          available: conversationContext.latestConversationKind === 'programming',
+          label: 'Latest programming response',
+        },
+        job_search_result: { available: Boolean(latestJobSearch), label: 'Latest job search result' },
+      },
+    },
+  })
+  const createDocumentFromConversation = resolvedRoute.source === 'latest_response'
+    && resolvedRoute.action === 'create'
   const explicitNewDocument = wantsDocument(trimmedQuestion)
     && !isDocumentContextFollowUp(trimmedQuestion)
   const editingDocument = Boolean(
@@ -2043,7 +2095,8 @@ async function handleChat(request, response) {
     && !directProgrammingRequest
     && !createDocumentFromConversation
     && !explicitNewDocument
-    && (interpretation.intent === 'edit_document'
+    && (resolvedRoute.source === 'existing_document'
+      || interpretation.intent === 'edit_document'
       || wantsDocumentEdit(trimmedQuestion)
       || isDocumentContextFollowUp(trimmedQuestion)),
   )
@@ -2060,7 +2113,6 @@ async function handleChat(request, response) {
     && interpretation.intent === 'edit_spreadsheet',
   )
   const researchSpreadsheet = interpretation.intent === 'research_spreadsheet'
-    || (interpretation.intent === 'create_spreadsheet' && requiresResearchBackedSpreadsheet(trimmedQuestion))
     || (interpretation.intent === 'edit_spreadsheet' && !existingSpreadsheetHasData)
   const reusablePremadeList = getReusablePremadeList(
     trimmedQuestion,
@@ -2149,7 +2201,7 @@ async function handleChat(request, response) {
         interpretation,
       )
     }
-    void runThinker(jobId, trimmedQuestion, emotion, recalledMemories, interpretation)
+    void runThinker(jobId, trimmedQuestion, emotion, recalledMemories, interpretation, requestSequence)
   }
   if (!jobSearchRequest) void runMemoryKeeper(trimmedQuestion, recalledMemories)
 }
