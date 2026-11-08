@@ -141,6 +141,18 @@ h2 { margin: 10px 0 8px; font: 500 clamp(30px, 5vw, 46px)/1.05 Georgia, serif; l
 .note-remove-button { min-height: 32px; padding: 0 10px; border: 1px solid var(--line); background: transparent; color: var(--muted); font-size: 12px; }
 .note-remove-button:hover:not(:disabled) { border-color: #a53d42; background: #fff3f1; color: #a53d42; }
 .notes-empty-state { margin: 0; color: var(--muted); font-size: 13px; }
+.message-row.current-info-message { max-width: 100%; }
+.current-info-results { padding: 18px; border: 1px solid var(--line); border-radius: 14px; background: #edf3ee; text-align: left; }
+.current-info-header { margin-bottom: 14px; }
+.current-info-header h3 { margin: 5px 0 0; color: var(--ink); font: 500 21px/1.25 Georgia, serif; }
+.current-info-section { margin-top: 14px; }
+.current-info-section h4 { margin: 0 0 6px; color: var(--ink); font-size: 13px; }
+.current-info-section > p { margin: 0; color: var(--ink); font-size: 13px; line-height: 1.55; white-space: pre-wrap; }
+.current-info-meta { margin-top: 5px !important; color: var(--muted) !important; font-size: 11px !important; }
+.current-info-sources { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.current-info-sources li { padding-top: 8px; border-top: 1px solid var(--line); }
+.current-info-sources a { color: var(--ink); font-size: 12px; font-weight: 700; text-decoration-color: var(--dark-mint); text-underline-offset: 3px; }
+.current-info-sources p { margin: 4px 0 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
 .research-header { margin-bottom: 14px; }
 .research-label { color: var(--dark-mint); font: 700 10px/1.2 ui-monospace, monospace; letter-spacing: .1em; }
 .research-header h3 { margin: 5px 0 0; color: var(--ink); font: 500 22px/1.2 Georgia, serif; }

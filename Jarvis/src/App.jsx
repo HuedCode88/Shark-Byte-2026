@@ -399,6 +399,47 @@ function NoteResults({ noteResult, onDelete, deletingNoteId }) {
   )
 }
 
+function CurrentInfoResults({ info }) {
+  return (
+    <section className="current-info-results" aria-label="Current information">
+      <header className="current-info-header">
+        <span className="research-label">LIVE UPDATE</span>
+        <h3>{info.location || 'Current information'}</h3>
+      </header>
+      {info.weather && (
+        <section className="current-info-section">
+          <h4>Weather</h4>
+          <p>{info.weather.summary}</p>
+          {info.weather.currentTime && <p className="current-info-meta">Local time: {info.weather.currentTime}</p>}
+        </section>
+      )}
+      {info.news && (
+        <section className="current-info-section">
+          <h4>News</h4>
+          <p>{info.news.summary}</p>
+        </section>
+      )}
+      {info.sources?.length > 0 && (
+        <section className="current-info-section">
+          <h4>Sources</h4>
+          <ul className="current-info-sources">
+            {info.sources.map((source, index) => {
+              const url = safeWebUrl(source.url)
+              if (!url) return null
+              return (
+                <li key={`${url}-${index}`}>
+                  <a href={url} target="_blank" rel="noreferrer">{source.title || url}</a>
+                  {source.snippet && <p>{source.snippet}</p>}
+                </li>
+              )
+            })}
+          </ul>
+        </section>
+      )}
+    </section>
+  )
+}
+
 export default function App() {
   const [messages, setMessages] = useState([])
   const [isLoading, setIsLoading] = useState(false)
@@ -659,12 +700,14 @@ export default function App() {
       const jobSearching = mode === 'job_search'
       const managingCalendar = mode === 'calendar'
       const managingNotes = mode === 'notes'
-      const maxAttempts = researching || jobSearching ? 480 : 120
-      const pollInterval = researching || jobSearching ? 500 : 150
+      const checkingCurrentInfo = mode === 'current_info'
+      const maxAttempts = researching || jobSearching ? 480 : checkingCurrentInfo ? 240 : 120
+      const pollInterval = researching || jobSearching ? 500 : checkingCurrentInfo ? 300 : 150
       if (researching) setLoadingText('Searching the web')
       if (jobSearching) setLoadingText('Searching current job listings')
       if (managingCalendar) setLoadingText('Updating your calendar')
       if (managingNotes) setLoadingText('Saving your note')
+      if (checkingCurrentInfo) setLoadingText('Checking current information')
 
       for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
         await new Promise((resolve) => setTimeout(resolve, pollInterval))
@@ -674,6 +717,18 @@ export default function App() {
         if (!response.ok) throw new Error(job.error || 'The chat job could not be found.')
 
         if (job.status === 'complete') {
+          if (job.currentInfo) {
+            setMessages((current) => [...current, {
+              role: 'assistant',
+              text: job.output || job.currentInfo.summary,
+              currentInfo: job.currentInfo,
+              jobId,
+            }])
+            responseAdded = true
+            if (job.output) await speak(job.output)
+            return
+          }
+
           if (job.noteResult) {
             setMessages((current) => [...current, {
               role: 'assistant',
@@ -782,6 +837,7 @@ export default function App() {
         if (job.status === 'searching_jobs') setLoadingText('Searching current job listings')
         if (job.status === 'managing_calendar') setLoadingText('Updating your calendar')
         if (job.status === 'saving_note') setLoadingText('Saving your note')
+        if (job.status === 'fetching_current_info') setLoadingText('Checking current information')
         if (job.status === 'failed') throw new Error(job.error)
       }
 
@@ -826,13 +882,15 @@ export default function App() {
           )}
           {messages.map((message, index) => (
             <div
-              className={`message-row ${message.role}${message.research ? ' research-message' : ''}${message.calendar ? ' calendar-message' : ''}${message.noteResult ? ' note-message' : ''}`}
+              className={`message-row ${message.role}${message.research ? ' research-message' : ''}${message.calendar ? ' calendar-message' : ''}${message.noteResult ? ' note-message' : ''}${message.currentInfo ? ' current-info-message' : ''}`}
               key={`${message.role}-${index}`}
             >
               <span className="message-label">
-                {message.noteResult ? 'Notes' : message.calendar ? 'Calendar' : message.jobSearch ? 'Jobs' : message.research ? 'Research' : 'Jarvis'}
+                {message.currentInfo ? 'Live update' : message.noteResult ? 'Notes' : message.calendar ? 'Calendar' : message.jobSearch ? 'Jobs' : message.research ? 'Research' : 'Jarvis'}
               </span>
-              {message.noteResult
+              {message.currentInfo
+                ? <CurrentInfoResults info={message.currentInfo} />
+                : message.noteResult
                 ? <NoteResults noteResult={message.noteResult} onDelete={removeNote} deletingNoteId={deletingNoteId} />
                 : message.calendar
                 ? <CalendarEvents calendar={message.calendar} onDelete={removeCalendarEvent} deletingEventId={deletingEventId} />
