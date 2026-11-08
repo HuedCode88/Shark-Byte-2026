@@ -57,7 +57,7 @@ let latestConversationKind = null
 let latestJobSearch = null
 let latestDossier = null
 let pendingCalendarAction = null
-let pendingNoteAction = false
+let pendingNoteAction = null
 let latestRequestSequence = 0
 const maxMemoryEntries = 20
 const maxJobEntries = 100
@@ -335,23 +335,65 @@ function isNoteSaveRequest(question) {
 }
 
 function isNoteListRequest(question) {
-  return /\b(?:show|list|read|view|open|pull up|what are)\b.{0,50}\b(?:my\s+)?notes?\b/i.test(question)
+  return /\b(?:show|list|read|view|open|pull up|what are)\b.{0,50}\b(?:(?:my|deh)\s+)?notes?\b/i.test(question)
     || /\bwhat\s+(?:did|have)\s+i\s+(?:ask you to )?note\b/i.test(question)
 }
 
 function isNoteDeleteRequest(question) {
-  return /\b(?:remove|delete|forget|erase)\b.{0,40}\bnotes?\b/i.test(question)
+  return /\b(?:remove|delete|get\s+rid\s+of|forget|erase)\b.{0,50}\b(?:notes?|them|those|these|both|all)\b/i.test(question)
+    || /\b(?:them|those|these|both|all)\b.{0,30}\b(?:remove|delete|get\s+rid\s+of|forget|erase)\b/i.test(question)
+    || (latestConversationKind === 'note' && /\b(?:remove|delete|get\s+rid\s+of|forget|erase)\b/i.test(question))
+    || /\b(?:from|in|on)\s+(?:the\s+)?(?:my\s+)?notes?\b/i.test(question)
 }
 
 function isNoteRequest(question) {
-  return pendingNoteAction || isNoteSaveRequest(question) || isNoteListRequest(question) || isNoteDeleteRequest(question)
+  return Boolean(pendingNoteAction) || isNoteSaveRequest(question) || isNoteListRequest(question) || isNoteDeleteRequest(question)
 }
 
 function extractNoteText(question) {
+  const command = question.match(/\b(?:take|make|write|jot|save|record)\s+(?:a\s+)?note(?:\s+(?:that|of|to myself))?\b|(?:write|jot)\s+(?:this|that)\s+down\b|note\s+that\b/i)
+  if (!command) return question.trim().slice(0, 4000)
   return question
-    .replace(/^(?:(?:hey|okay|please|jarvis|can you|could you)\s+)*(?:(?:take|make|write|jot|save|record)\s+(?:a\s+)?note(?:\s+(?:that|of|to myself))?|(?:write|jot)\s+(?:this|that)\s+down|note\s+that)\s*[:,-]?\s*/i, '')
+    .slice(command.index + command[0].length)
+    .replace(/^\s*[:,-]\s*/, '')
     .trim()
     .slice(0, 4000)
+}
+
+function normalizeNoteText(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[’']/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+}
+
+function noteEditDistance(left, right) {
+  const previous = Array.from({ length: right.length + 1 }, (_, index) => index)
+  for (let row = 1; row <= left.length; row += 1) {
+    const current = [row]
+    for (let column = 1; column <= right.length; column += 1) {
+      current[column] = Math.min(
+        current[column - 1] + 1,
+        previous[column] + 1,
+        previous[column - 1] + (left[row - 1] === right[column - 1] ? 0 : 1),
+      )
+    }
+    for (let column = 0; column <= right.length; column += 1) previous[column] = current[column]
+  }
+  return previous[right.length]
+}
+
+function extractNoteDeleteTarget(question) {
+  return question
+    .replace(/^(?:from|in|on)\s+(?:the\s+)?(?:my\s+)?notes?\b[\s!,:;-]*/i, '')
+    .replace(/^(?:please\s+)?(?:remove|delete|get\s+rid\s+of|forget|erase)\s+/i, '')
+    .replace(/\s+(?:from|off)\s+(?:of\s+)?(?:my\s+)?notes?\b.*$/i, '')
+    .replace(/\s+\b(?:from\s+my\s+notes?|in\s+my\s+notes?|on\s+my\s+notes?|actually|please|jarvis)\b/gi, ' ')
+    .replace(/^(?:the|my)\s+/i, '')
+    .replace(/\s+note\b.*$/i, '')
+    .replace(/^about\s+/i, '')
+    .trim()
 }
 
 function getNewsRequest(question) {
@@ -673,7 +715,7 @@ function isCalendarBulkClearRequest(question) {
 
 // #determ
 function isCalendarConfirmation(question) {
-  return /\b(?:confirm|confirmed|yes|yes please|do it|go ahead|proceed)\b/i.test(question)
+  return /^(?:confirm|confirmed|yes|yes please|do it|go ahead|proceed)[!.?,\s]*$/i.test(question.trim())
 }
 
 // #determ
@@ -2412,44 +2454,96 @@ Evidence:\n${evidence}`,
 async function runNoteManager(jobId, question) {
   try {
     let notes = await listNotes()
+    if (pendingNoteAction?.createdAt && Date.now() - pendingNoteAction.createdAt > 60_000) {
+      pendingNoteAction = null
+    }
     let action
     let note = null
     let summary
     if (pendingNoteAction && /\b(?:cancel|never mind|forget it)\b/i.test(question)) {
-      pendingNoteAction = false
+      pendingNoteAction = null
       action = 'cancel'
-      summary = 'Okay, I will not save a note.'
+      summary = 'Okay, I will not change your notes.'
+    } else if (pendingNoteAction?.action === 'delete' && isCalendarConfirmation(question)) {
+      note = await deleteNote(pendingNoteAction.noteId)
+      notes = await listNotes()
+      pendingNoteAction = null
+      action = 'delete'
+      summary = 'Removed that note.'
+    } else if (pendingNoteAction?.action === 'delete_multiple' && isCalendarConfirmation(question)) {
+      const ids = new Set(pendingNoteAction.noteIds)
+      const deleted = await updateNotes((current) => current.filter((saved) => !ids.has(saved.id)))
+      notes = deleted
+      pendingNoteAction = null
+      action = 'delete'
+      summary = `Removed ${ids.size} notes.`
+    } else if (pendingNoteAction?.action === 'delete_multiple'
+      && /^(both|all|them|those|these)(?:\s+\1)*[!.?,\s]*$/i.test(question.trim())) {
+      pendingNoteAction.awaitingConfirmation = true
+      action = 'confirm_delete'
+      summary = `I found ${pendingNoteAction.noteIds.length} matching notes. Reply "confirm" to delete them all, or "cancel" to keep them.`
+    } else if (pendingNoteAction?.action === 'delete_multiple'
+      && /\b(?:both|all|them|those|these)\b/i.test(question)
+      && /\b(?:remove|delete|get\s+rid\s+of|forget|erase)\b/i.test(question)) {
+      pendingNoteAction.awaitingConfirmation = true
+      action = 'confirm_delete'
+      summary = `I found ${pendingNoteAction.noteIds.length} matching notes. Reply "confirm" to delete them all, or "cancel" to keep them.`
+    } else if (pendingNoteAction?.action === 'delete_multiple') {
+      action = 'confirm_delete'
+      summary = `I found ${pendingNoteAction.noteIds.length} matching notes. Reply "confirm" to delete them all, or "cancel" to keep them.`
     } else if (isNoteListRequest(question)) {
       action = 'list'
       notes = [...notes].sort((left, right) => right.createdAt.localeCompare(left.createdAt)).slice(0, 100)
       summary = notes.length ? `You have ${notes.length} saved note${notes.length === 1 ? '' : 's'}.` : 'You do not have any saved notes yet.'
     } else if (isNoteDeleteRequest(question)) {
-      const target = question.replace(/^(?:please\s+)?(?:remove|delete|forget|erase)\s+(?:(?:the|my)\s+)?(?:note\s+)?(?:about\s+)?/i, '').trim()
-      const matches = notes.filter((saved) => !target || saved.text.toLowerCase().includes(target.toLowerCase()))
+      const target = extractNoteDeleteTarget(question)
+      const normalizedTarget = normalizeNoteText(target)
+      const isReference = /^(?:it|that|this|the note|that note|this note)$/i.test(target)
+      const recentNote = [...notes].sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0]
+      const matches = isReference && recentNote
+        ? [recentNote]
+        : notes.filter((saved) => {
+          if (!normalizedTarget) return false
+          const normalizedSaved = normalizeNoteText(saved.text)
+          return normalizedSaved.includes(normalizedTarget)
+            || noteEditDistance(normalizedSaved, normalizedTarget) <= Math.max(2, Math.floor(normalizedTarget.length * 0.2))
+        })
       if (matches.length === 1) {
-        note = await deleteNote(matches[0].id)
-        notes = await listNotes()
-        action = 'delete'
-        summary = 'Removed that note.'
+        pendingNoteAction = {
+          action: 'delete',
+          noteId: matches[0].id,
+          createdAt: Date.now(),
+        }
+        action = 'confirm_delete'
+        note = matches[0]
+        summary = 'I found that note. Reply "confirm" if you want me to delete it, or "cancel" to keep it.'
+      } else if (matches.length > 1) {
+        pendingNoteAction = {
+          action: 'delete_multiple',
+          noteIds: matches.map((match) => match.id),
+          createdAt: Date.now(),
+        }
+        action = 'clarify'
+        summary = `I found ${matches.length} matching notes. Tell me which one to remove, or say "remove them both" if you want to delete both.`
       } else {
         action = 'clarify'
-        summary = matches.length > 1 ? 'I found more than one matching note. Please be more specific.' : 'I could not find a matching note.'
+        summary = 'I could not find a matching note.'
       }
     } else {
       const text = extractNoteText(question)
       if (!text) {
-        pendingNoteAction = true
+        pendingNoteAction = { createdAt: Date.now() }
         action = 'clarify'
         summary = 'What would you like me to write down?'
       } else {
-        pendingNoteAction = false
+        pendingNoteAction = null
         note = { id: randomUUID(), text, createdAt: new Date().toISOString() }
         notes = await updateNotes((current) => [...current, note])
         action = 'create'
         summary = 'Saved your note.'
       }
     }
-    if (action !== 'clarify') pendingNoteAction = false
+    if (action !== 'clarify' && action !== 'confirm_delete') pendingNoteAction = null
     latestConversation = { question, response: summary }
     latestConversationKind = 'note'
     updateJob(jobId, { status: 'complete', output: summary, noteResult: { action, summary, note, notes } })
