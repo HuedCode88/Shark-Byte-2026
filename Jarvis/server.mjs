@@ -2208,8 +2208,10 @@ async function handleChat(request, response) {
 
 const server = createServer(async (request, response) => {
   try {
-  if (request.method === 'GET' && request.url.startsWith('/api/chat/')) {
-    const job = jobs.get(request.url.slice('/api/chat/'.length))
+  if (request.method === 'GET'
+    && (request.url.startsWith('/api/chat/') || request.url.startsWith('/api/text-chat/'))) {
+    const prefix = request.url.startsWith('/api/text-chat/') ? '/api/text-chat/' : '/api/chat/'
+    const job = jobs.get(request.url.slice(prefix.length))
     sendJson(response, job ? 200 : 404, job || { error: 'Chat job not found.' })
     return
   }
@@ -2337,6 +2339,10 @@ const server = createServer(async (request, response) => {
   }
 
   if (request.method === 'POST' && request.url === '/api/chat') {
+    await handleChat(request, response)
+    return
+  }
+  if (request.method === 'POST' && request.url === '/api/text-chat') {
     await handleChat(request, response)
     return
   }
