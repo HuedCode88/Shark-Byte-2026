@@ -158,6 +158,65 @@ function SpreadsheetAttachment({ spreadsheet }) {
   )
 }
 
+function CalendarAttachment({ calendar }) {
+  const events = Array.isArray(calendar?.events) ? calendar.events : []
+  function formatDate(value) {
+    if (typeof value !== 'string') return { day: '', month: '', weekday: '' }
+    const date = new Date(`${value}T00:00:00Z`)
+    if (Number.isNaN(date.getTime())) return { day: value, month: '', weekday: '' }
+    return {
+      day: new Intl.DateTimeFormat('en-US', { day: 'numeric', timeZone: 'UTC' }).format(date),
+      month: new Intl.DateTimeFormat('en-US', { month: 'short', timeZone: 'UTC' }).format(date).toUpperCase(),
+      weekday: new Intl.DateTimeFormat('en-US', { weekday: 'long', timeZone: 'UTC' }).format(date),
+    }
+  }
+  function formatTime(value) {
+    if (typeof value !== 'string' || !value) return ''
+    const [hours, minutes] = value.split(':').map(Number)
+    if (!Number.isInteger(hours) || !Number.isInteger(minutes)) return value
+    return new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit' }).format(
+      new Date(Date.UTC(2026, 0, 1, hours, minutes)),
+    )
+  }
+  return (
+    <section className="calendar-card" aria-label="Calendar">
+      <div className="document-header">
+        <div>
+          <span className="document-label">CALENDAR</span>
+          <h3>{calendar?.action === 'delete' ? 'Calendar updated' : 'Upcoming events'}</h3>
+        </div>
+        <span className="document-status">{events.length} {events.length === 1 ? 'event' : 'events'}</span>
+      </div>
+      {events.length > 0 ? (
+        <div className="calendar-events">
+          {events.map((event) => (
+            <article className="calendar-event" key={event.id || `${event.startDate}-${event.title}`}>
+              <div className="calendar-date-block" aria-label={event.startDate}>
+                <span>{formatDate(event.startDate).month}</span>
+                <strong>{formatDate(event.startDate).day}</strong>
+              </div>
+              <div className="calendar-event-content">
+                <p className="calendar-weekday">{formatDate(event.startDate).weekday}</p>
+                <h4>{event.title}</h4>
+                <p className="calendar-event-time">
+                  {event.allDay ? 'All day' : formatTime(event.startTime) || 'Time not set'}
+                </p>
+              </div>
+              {(event.location || event.notes) && (
+                <p className="calendar-event-details">
+                  {[event.location, event.notes].filter(Boolean).join(' · ')}
+                </p>
+              )}
+            </article>
+          ))}
+        </div>
+      ) : (
+        <p className="calendar-empty">No upcoming events.</p>
+      )}
+    </section>
+  )
+}
+
 function TextTester() {
   const [question, setQuestion] = useState('')
   const [messages, setMessages] = useState([])
@@ -198,6 +257,7 @@ function TextTester() {
           dossier: job.dossier,
           document: job.document,
           spreadsheet: job.spreadsheet,
+          calendar: job.calendar,
           jobId: data.jobId,
         }
         const documentDone = !job.document
@@ -259,6 +319,7 @@ function TextTester() {
               {message.dossier && <ResearchReport dossier={message.dossier} />}
               {message.document && <DocumentAttachment document={message.document} />}
               {message.spreadsheet && <SpreadsheetAttachment spreadsheet={message.spreadsheet} />}
+              {message.calendar && <CalendarAttachment calendar={message.calendar} />}
             </div>
           ))}
           {isLoading && (

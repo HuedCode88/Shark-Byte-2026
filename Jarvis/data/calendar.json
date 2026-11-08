@@ -1,0 +1,15 @@
+[
+  {
+    "id": "1c89245d-b3f0-4b49-a442-4423b778352a",
+    "title": "Nick's Birthday",
+    "startDate": "2027-04-14",
+    "startTime": "",
+    "endDate": "2027-04-14",
+    "endTime": "23:59",
+    "allDay": true,
+    "timeZone": "UTC",
+    "location": "",
+    "notes": "",
+    "createdAt": "2026-11-08T05:43:57.990Z"
+  }
+]
