@@ -39,6 +39,7 @@ let latestSpreadsheetId = null
 let latestArtifact = null
 let latestConversation = null
 let latestConversationKind = null
+let latestJobSearch = null
 let latestRequestSequence = 0
 const maxMemoryEntries = 20
 const maxJobEntries = 100
@@ -358,7 +359,90 @@ function conversationKindForIntent(intent) {
   if (intent.endsWith('_document') || intent === 'create_document' || intent === 'edit_document') {
     return 'document'
   }
+
   return intent
+}
+
+function shouldCreateDocumentFromConversation(question, conversation, conversationKind) {
+  if (!conversation?.response || conversationKind === 'document') return false
+  if (!wantsDocument(question)) return false
+  const referencesPriorResponse = /\b(?:it|this|that|these|those|above|previous|prior|last|what you just said|what you said|your answer|your response|your explanation|the answer|the response|the text|the content|the code|the story|the poem|the lyrics?)\b/i.test(question)
+  const derivesFromPriorResponse = /\b(?:of|from|using|with|based on|turn|put|save|export|convert)\b.{0,50}\b(?:it|this|that|these|those|above|previous|prior|last|what you just said|your answer|your response|the answer|the response|the text|the content)\b/i.test(question)
+  const namesPriorSubject = /\b(?:of|from)\b/i.test(question)
+    && !/\bfrom\s+(?:scratch|nothing|the ground up)\b/i.test(question)
+  const isBareDownloadRequest = /\b(?:downloadable|download|save|export)\b/i.test(question)
+    && !/\b(?:about|on|for|regarding|concerning)\b/i.test(question)
+  return referencesPriorResponse || derivesFromPriorResponse || namesPriorSubject || isBareDownloadRequest
+}
+
+function firstJobString(job, ...keys) {
+  for (const key of keys) {
+    if (typeof job?.[key] === 'string' && job[key].trim()) return job[key].trim()
+  }
+  return ''
+}
+
+function getPremadeJobUrl(job) {
+  const directUrl = firstJobString(job, 'url', 'link', 'source_url', 'sourceUrl', 'listingUrl', 'listing_url')
+  const normalizedDirectUrl = normalizeHttpUrl(directUrl)
+  if (normalizedDirectUrl) return normalizedDirectUrl
+
+  const values = Object.values(job || {})
+  for (const value of values) {
+    if (typeof value !== 'string') continue
+    const match = value.match(/https?:\/\/[^\s<>'")\]]+/i)
+    const normalizedUrl = normalizeHttpUrl(match?.[0]?.replace(/[.,;:]+$/, ''))
+    if (normalizedUrl) return normalizedUrl
+  }
+  return ''
+}
+
+function buildJobSearchSpreadsheet(jobSearch) {
+  const jobs = Array.isArray(jobSearch?.jobs) ? jobSearch.jobs : []
+  const rows = jobs
+    .map((job) => {
+      if (!job || typeof job !== 'object') return null
+      const sourceUrl = getPremadeJobUrl(job)
+      if (!sourceUrl) return null
+      return {
+        title: firstJobString(job, 'title', 'name'),
+        company: firstJobString(job, 'company', 'employer'),
+        location: firstJobString(job, 'location'),
+        work_mode: firstJobString(job, 'workMode', 'work_mode', 'workModeType'),
+        employment_type: firstJobString(job, 'employmentType', 'employment_type', 'type'),
+        salary: firstJobString(job, 'salary', 'pay'),
+        posted_date: firstJobString(job, 'postedDate', 'posted_date', 'datePosted'),
+        description: firstJobString(job, 'description', 'snippet', 'summary'),
+        source_url: sourceUrl,
+      }
+    })
+    .filter(Boolean)
+  return {
+    title: `${jobSearch?.query || 'Job Listings'} - Spreadsheet`,
+    sheets: [{
+      name: 'Job Listings',
+      columns: [
+        { key: 'title', label: 'Job Title', type: 'text' },
+        { key: 'company', label: 'Company', type: 'text' },
+        { key: 'location', label: 'Location', type: 'text' },
+        { key: 'work_mode', label: 'Work Mode', type: 'text' },
+        { key: 'employment_type', label: 'Employment Type', type: 'text' },
+        { key: 'salary', label: 'Salary', type: 'text' },
+        { key: 'posted_date', label: 'Posted Date', type: 'date' },
+        { key: 'description', label: 'Description', type: 'text' },
+        { key: 'source_url', label: 'Source URL', type: 'url' },
+      ],
+      rows,
+    }],
+  }
+}
+
+function getReusablePremadeList(question, previousConversationKind, jobSearch) {
+  if (!wantsSpreadsheet(question)) return null
+  const mentionsJobList = /\b(?:job|jobs|listing|listings|opening|openings|position|positions)\b/i.test(question)
+  if (!mentionsJobList && previousConversationKind !== 'job_search') return null
+  if (!jobSearch || !Array.isArray(jobSearch.jobs) || jobSearch.jobs.length === 0) return null
+  return jobSearch
 }
 
 function parseOrchestratorPlan(rawOutput, question) {
@@ -612,6 +696,7 @@ async function runDocumentWriter(
   existingDocument = null,
   interpretation = null,
   researchDossier = null,
+  sourceConversation = null,
 ) {
   const setDocument = (document) => updateJob(jobId, { document })
   try {
@@ -627,7 +712,11 @@ async function runDocumentWriter(
       : DOC_SPEC_PROMPT
     const result = await callSwarms(
       'Jarvis Document Pipeline',
-      `${existingDocument
+      `${sourceConversation
+        ? `Create a new document from the previous assistant response below. Preserve the source content exactly, including line breaks and wording. Do not substitute an old document, generic guidelines, a summary, or a wrap-up.
+Previous assistant response:
+${sourceConversation.response}`
+        : existingDocument
         ? `Edit the existing document according to the user's follow-up request. Preserve its subject, characters, tone, plot, and useful content unless the user asks to change them. For translation requests, translate the document itself while preserving its meaning and structure; do not ask the user to paste it. Make the requested change autonomously; do not ask where to begin.
 Existing document:
 ${JSON.stringify(existingDocument.spec)}`
@@ -643,7 +732,9 @@ Relevant memories: ${recalledMemories.join('; ') || 'none'}`,
           agent_name: 'ContentWriter',
           system_prompt: researchDossier
             ? 'Create a complete, readable report using only the supplied research findings. Include a Sources section with the supplied source titles and URLs, and include limitations or conflicting information when present. Do not invent facts, quotes, or citations. Return plain text for the structure editor.'
-            : 'Execute the file request, including very small requests. If the user asks for a file containing specific text, preserve that text exactly and do not add commentary, headings, or extra content unless requested. Write the full content of the requested document when more detail is requested. Plain text only, no markdown symbols, no HTML, no URLs. Use only facts from the request or memories; write [TBD] for anything unknown instead of inventing it.',
+            : sourceConversation
+              ? 'Create the requested file from the supplied previous response. Preserve that response exactly as the document body; do not summarize, replace, or add unrelated content. Plain text only.'
+              : 'Execute the file request, including very small requests. If the user asks for a file containing specific text, preserve that text exactly and do not add commentary, headings, or extra content unless requested. Write the full content of the requested document when more detail is requested. Plain text only, no markdown symbols, no HTML, no URLs. Use only facts from the request or memories; write [TBD] for anything unknown instead of inventing it.',
           model_name: configuredModel('DOC_WRITER_MODEL', fallbackModels.docWriter),
         },
         {
@@ -1698,6 +1789,8 @@ async function runJobSearcher(jobId, query) {
         jobs: [],
       }
       latestConversation = { question: query, response: jobSearch.summary }
+      latestJobSearch = jobSearch
+      latestConversationKind = 'job_search'
       updateJob(jobId, {
         status: 'complete',
         jobSearch,
@@ -1819,6 +1912,8 @@ Evidence:\n${evidence}`,
         searchedAt: new Date().toISOString(),
       }
       latestConversation = { question: query, response: jobSearch.summary }
+      latestJobSearch = jobSearch
+      latestConversationKind = 'job_search'
       updateJob(jobId, {
         status: 'complete',
         jobSearch,
@@ -1872,6 +1967,8 @@ Evidence:\n${evidence}`,
       searchedAt: new Date().toISOString(),
     }
     latestConversation = { question: query, response: summary }
+    latestJobSearch = jobSearch
+    latestConversationKind = 'job_search'
     updateJob(jobId, {
       status: 'complete',
       jobSearch,
@@ -1915,7 +2012,14 @@ async function handleChat(request, response) {
     latestArtifact,
     latestConversation,
     latestConversationKind,
+    latestJobSearch,
   }
+  const previousConversationWasJobSearch = conversationContext.latestConversationKind === 'job_search'
+  const createDocumentFromConversation = shouldCreateDocumentFromConversation(
+    trimmedQuestion,
+    conversationContext.latestConversation,
+    conversationContext.latestConversationKind,
+  )
   const interpretation = jobSearchRequest
     ? { intent: 'job_search', task: trimmedQuestion }
     : directProgrammingRequest
@@ -1937,6 +2041,7 @@ async function handleChat(request, response) {
   const editingDocument = Boolean(
     existingDocument
     && !directProgrammingRequest
+    && !createDocumentFromConversation
     && !explicitNewDocument
     && (interpretation.intent === 'edit_document'
       || wantsDocumentEdit(trimmedQuestion)
@@ -1944,7 +2049,7 @@ async function handleChat(request, response) {
   )
   const documentRequested = wantsDocument(trimmedQuestion)
   const creatingDocument = documentRequested
-    && (explicitNewDocument || interpretation.intent === 'create_document')
+    && (explicitNewDocument || createDocumentFromConversation || interpretation.intent === 'create_document')
   const researchDocument = documentRequested
     && (interpretation.intent === 'research_document'
       || (explicitNewDocument && wantsWebResearch(trimmedQuestion)))
@@ -1957,9 +2062,15 @@ async function handleChat(request, response) {
   const researchSpreadsheet = interpretation.intent === 'research_spreadsheet'
     || (interpretation.intent === 'create_spreadsheet' && requiresResearchBackedSpreadsheet(trimmedQuestion))
     || (interpretation.intent === 'edit_spreadsheet' && !existingSpreadsheetHasData)
+  const reusablePremadeList = getReusablePremadeList(
+    trimmedQuestion,
+    previousConversationWasJobSearch ? 'job_search' : conversationContext.latestConversationKind,
+    latestJobSearch,
+  )
   const creatingSpreadsheet = interpretation.intent === 'create_spreadsheet' && !researchSpreadsheet
   const researching = (interpretation.intent === 'research' || researchDocument || researchSpreadsheet)
     && !editingDocument && !editingSpreadsheet
+  const spreadsheetDeliverable = researchSpreadsheet || reusablePremadeList
   const deliverable = researchDocument ? 'document' : researchSpreadsheet ? 'spreadsheet' : null
   const mode = jobSearchRequest
     ? 'job_search'
@@ -1967,6 +2078,8 @@ async function handleChat(request, response) {
       ? 'research_document'
       : researchSpreadsheet
         ? 'research_spreadsheet'
+        : reusablePremadeList
+          ? 'research_spreadsheet'
         : researching
           ? 'research'
           : 'chat'
@@ -1975,7 +2088,7 @@ async function handleChat(request, response) {
     status,
     mode,
     ...(researchDocument ? { document: { status: 'pending' } } : {}),
-    ...(researchSpreadsheet ? { spreadsheet: { status: 'pending' } } : {}),
+    ...(spreadsheetDeliverable ? { spreadsheet: { status: 'pending' } } : {}),
   })
   sendJson(response, 202, {
     jobId,
@@ -1986,6 +2099,31 @@ async function handleChat(request, response) {
   })
   if (jobSearchRequest) {
     void runJobSearcher(jobId, jobSearchQuery)
+  } else if (reusablePremadeList) {
+    const spec = buildJobSearchSpreadsheet(reusablePremadeList)
+    const rowCount = spec.sheets.reduce((count, sheet) => count + sheet.rows.length, 0)
+    if (!rowCount) {
+      updateJob(jobId, {
+        status: 'failed',
+        error: 'The previous job list did not contain usable listing links for the spreadsheet.',
+      })
+      return
+    }
+    const saved = saveSpreadsheet(spec, { flaggedCells: 0, clearedSourceUrls: 0 })
+    latestSpreadsheetId = saved.id
+    latestArtifact = 'spreadsheet'
+    updateJob(jobId, {
+      status: 'complete',
+      output: 'I am putting the previously found job listings into a spreadsheet.',
+      spreadsheet: {
+        status: 'ready',
+        ...saved,
+        formats: SPREADSHEET_EXPORT_FORMATS,
+        flaggedCells: 0,
+        clearedSourceUrls: 0,
+        html: renderSheetHtml(spec),
+      },
+    })
   } else if (researching) {
     void runResearcher(jobId, interpretation.task, deliverable, recalledMemories)
   } else {
@@ -1997,6 +2135,8 @@ async function handleChat(request, response) {
         recalledMemories,
         editingDocument ? existingDocument : null,
         interpretation,
+        null,
+        createDocumentFromConversation ? conversationContext.latestConversation : null,
       )
     }
     if (creatingSpreadsheet || editingSpreadsheet) {
@@ -2206,7 +2346,14 @@ async function handleTts(request, response) {
     return
   }
 
-  const { text } = JSON.parse((await readBody(request)).toString('utf8'))
+  let payload
+  try {
+    payload = JSON.parse((await readBody(request)).toString('utf8'))
+  } catch {
+    sendJson(response, 400, { error: 'Please provide valid JSON.' })
+    return
+  }
+  const { text } = payload
   if (typeof text !== 'string' || !text.trim()) {
     sendJson(response, 400, { error: 'Please provide text to speak.' })
     return

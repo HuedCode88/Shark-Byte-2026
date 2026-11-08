@@ -73,7 +73,13 @@ export function useSpeech() {
       body: JSON.stringify({ text }),
       signal,
     })
-      .then((r) => (r.ok ? r.blob() : Promise.reject(new Error("TTS failed"))))
+      .then(async (r) => {
+        if (r.ok) return r.blob()
+        const result = await r.json().catch(() => ({}))
+        throw new Error(
+          typeof result.error === 'string' ? result.error : `TTS failed (${r.status})`,
+        )
+      })
       .catch(() => null);
 
     const playback = queueRef.current.then(async () => {
