@@ -88,9 +88,9 @@ export function useSpeechRecognition({
         const r = await fetch("/api/stt", { method: "POST", body: form });
         const result = await r.json().catch(() => ({}));
         if (!r.ok) {
-          throw new Error(
-            typeof result.error === "string" ? result.error : `Transcription failed (${r.status})`,
-          );
+          throw new Error(r.status === 400
+            ? "Can you repeat that please?"
+            : typeof result.error === "string" ? result.error : `Transcription failed (${r.status})`);
         }
         const { text } = result;
         setFinalText(text);

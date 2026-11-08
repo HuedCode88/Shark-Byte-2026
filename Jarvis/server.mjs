@@ -257,11 +257,11 @@ function updateCalendarEvents(update) {
 
   async function deleteNote(noteId) {
     let deleted = null
-    await updateNotes((notes) => {
-      deleted = notes.find((note) => note.id === noteId) || null
-      return notes.filter((note) => note.id !== noteId)
+    const notes = await updateNotes((currentNotes) => {
+      deleted = currentNotes.find((note) => note.id === noteId) || null
+      return currentNotes.filter((note) => note.id !== noteId)
     })
-    return deleted
+    return { deleted, notes }
   }
 
 // #determ
@@ -324,7 +324,7 @@ function readEmotion(question) {
 
 // #determ
 function isGreeting(question) {
-  return /^(hi|hello|hey|yo|hiya|greetings)(\s+jarvis)?[!.?,\s]*$/i.test(question.trim())
+  return /^(?:(?:hi|hello|hey|yo|hiya|greetings|hola|buenos días|buenas tardes|buenas noches)(?:\s+jarvis)?(?:[!.?,\s]+(?:how are you|how's it going|how are things|cómo estás|como estas))?[!.?,\s]*)$/i.test(question.trim())
 }
 
 function isNoteSaveRequest(question) {
@@ -337,6 +337,8 @@ function isNoteSaveRequest(question) {
 function isNoteListRequest(question) {
   return /\b(?:show|list|read|view|open|pull up|what are)\b.{0,50}\b(?:my\s+)?notes?\b/i.test(question)
     || /\bwhat\s+(?:did|have)\s+i\s+(?:ask you to )?note\b/i.test(question)
+    || /\b(?:what(?:'s| is| are)|tell me about|do i have|have i got|anything in|any)\b.{0,50}\b(?:my\s+)?(?:saved\s+)?notes?\b/i.test(question)
+    || /\b(?:my\s+)?(?:saved\s+)?notes?\b.{0,50}\b(?:what(?:'s| is| are)|show|list|read|tell me|do i have|have i got)\b/i.test(question)
 }
 
 function isNoteDeleteRequest(question) {
@@ -345,6 +347,25 @@ function isNoteDeleteRequest(question) {
 
 function isNoteRequest(question) {
   return pendingNoteAction || isNoteSaveRequest(question) || isNoteListRequest(question) || isNoteDeleteRequest(question)
+}
+
+// #determ
+function normalizeNoteText(value) {
+  return String(value || '')
+    .replace(/^["'“”‘’\s.,:;-]+|["'“”‘’\s.,:;-]+$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase()
+}
+
+// #determ
+function extractNoteDeleteTarget(question) {
+  const quotedTarget = question.match(/["“](.+?)["”]/)?.[1] || ''
+  if (quotedTarget) return quotedTarget.trim()
+  return question.replace(
+    /^(?:please\s+)?(?:remove|delete|forget|erase)\s+(?:(?:the|my)\s+)?(?:note\s+(?:(?:about|mentioning|containing|with|on|regarding)\s+|that\s+(?:mentions?|contains?|includes?)\s+)?|)/i,
+    '',
+  ).trim()
 }
 
 function extractNoteText(question) {
@@ -536,6 +557,17 @@ function fallbackInterpretation(question, hasDocument, hasSpreadsheet = false, p
   if (isJobSearchRequest(question)) {
     return { intent: 'job_search', task: question, format: null, needsClarification: false }
   }
+  if (isPlanningRequest(question)) {
+    return {
+      intent: 'programming',
+      task: `Create a concrete architecture and implementation plan for this request:
+${question}
+
+Include the system hierarchy, agent responsibilities, routing flow, tool and data boundaries, implementation order, and validation strategy.`,
+      format: null,
+      needsClarification: false,
+    }
+  }
   if (wantsSpreadsheet(question)) {
     return {
       intent: wantsSpreadsheetResearch(question) ? 'research_spreadsheet' : 'create_spreadsheet',
@@ -582,6 +614,14 @@ function fallbackInterpretation(question, hasDocument, hasSpreadsheet = false, p
 // #determ
 function isProgrammingRequest(question) {
   return /\b(code|coding|program|programming|developer|debug|debugging|function|class|algorithm|binary tree|api|javascript|typescript|python|java|c\+\+|c#|go|rust|ruby|php|kotlin|swift|react|vue|css|html|sql|regex)\b/i.test(question)
+}
+
+// #determ
+function isPlanningRequest(question) {
+  return /\b(?:give|make|create|show|outline|provide)\b.{0,50}\b(?:plan|roadmap|architecture|hierarchy)\b/i.test(question)
+    || /\bhow\s+(?:should|would|can)\s+(?:i|we|you)\s+build\b/i.test(question)
+    || /\bdesign\b.{0,50}\b(?:system|assistant|hierarchy|architecture)\b/i.test(question)
+    || /\b(?:system|assistant)\s+(?:architecture|hierarchy)\b/i.test(question)
 }
 
 // #determ
@@ -693,10 +733,19 @@ function isCalendarDeleteRequest(question) {
 
 // #determ
 function isCalendarOverviewRequest(question) {
+  const mentionsCalendarPeriod = /\b(?:this|next|coming|upcoming)?\s*(?:weekend|week|month|year)\b|\b(?:january|february|march|april|may|june|july|august|september|october|november|december)(?:\s+\d{4})?\b/i.test(question)
+  const asksForScheduledItems = /\b(?:check|what|which|anything|any|do i have|have i got|is happening|going on|scheduled|schedule|appointments?|meetings?|events?|reminders?)\b/i.test(question)
+  const calendarContextFollowUp = latestConversationKind === 'calendar'
+    && /\b(?:what|which|tell me|show me|how about|what about|upcoming|next|scheduled)\b/i.test(question)
+    && /\b(?:event|events|appointment|appointments|meeting|meetings|plans?|schedule|calendar)\b/i.test(question)
   return /\b(?:show|open|view|display|pull up|bring up)\b.{0,60}\b(?:my\s+)?(?:calendar|schedule|agenda)\b/i.test(question)
     || /\b(?:calendar|schedule|agenda)\b.{0,60}\b(?:show|open|view|display)\b/i.test(question)
     || /\bwhat(?:'s| is| are)\s+(?:on|in)\s+(?:my\s+)?(?:calendar|schedule|agenda)\b/i.test(question)
     || /\bwhat\s+do\s+i\s+have\s+(?:on|in)\s+(?:my\s+)?(?:calendar|schedule|agenda)\b/i.test(question)
+    || (mentionsCalendarPeriod && asksForScheduledItems && /\b(?:calendar|schedule|agenda|on|in|during|for)\b/i.test(question))
+    || /\b(?:tell me|show me|what(?:'s| is| are)|do i have|have i got)\b.{0,60}\b(?:upcoming|coming up|scheduled|plans?|events?|appointments?|meetings?)\b/i.test(question)
+    || /\b(?:upcoming|coming up)\s+(?:events?|appointments?|meetings?|plans?)\b/i.test(question)
+    || calendarContextFollowUp
     || /\b(?:what|which|anything)\b.{0,60}\b(?:do i have|have i got|is happening|going on|scheduled)\b.{0,30}\b(?:this|next|coming|upcoming)\s+week\b/i.test(question)
     || /\b(?:what|which|anything)\b.{0,60}\b(?:do i have|have i got|is happening|going on|scheduled)\b.{0,30}\b(?:today|tomorrow|this weekend)\b/i.test(question)
 }
@@ -715,7 +764,30 @@ function calendarOverviewEndDate(question, today) {
   if (/\b(?:today|tomorrow)\b/i.test(question)) {
     return /\btomorrow\b/i.test(question) ? addCalendarDays(today, 1) : today
   }
+  const monthNames = 'january|february|march|april|may|june|july|august|september|october|november|december'
+  const monthMatch = question.match(new RegExp(`\\b(${monthNames})(?:\\s+(\\d{4}))?\\b`, 'i'))
+  if (monthMatch) {
+    const monthIndex = monthNames.split('|').indexOf(monthMatch[1].toLowerCase())
+    const todayDate = new Date(`${today}T00:00:00.000Z`)
+    const year = monthMatch[2]
+      ? Number(monthMatch[2])
+      : monthIndex >= todayDate.getUTCMonth() ? todayDate.getUTCFullYear() : todayDate.getUTCFullYear() + 1
+    return `${year}-${String(monthIndex + 1).padStart(2, '0')}-${String(new Date(Date.UTC(year, monthIndex + 1, 0)).getUTCDate()).padStart(2, '0')}`
+  }
   return ''
+}
+
+// #determ
+function calendarOverviewStartDate(question, today) {
+  const monthNames = 'january|february|march|april|may|june|july|august|september|october|november|december'
+  const monthMatch = question.match(new RegExp(`\\b(${monthNames})(?:\\s+(\\d{4}))?\\b`, 'i'))
+  if (!monthMatch) return today
+  const monthIndex = monthNames.split('|').indexOf(monthMatch[1].toLowerCase())
+  const todayDate = new Date(`${today}T00:00:00.000Z`)
+  const year = monthMatch[2]
+    ? Number(monthMatch[2])
+    : monthIndex >= todayDate.getUTCMonth() ? todayDate.getUTCFullYear() : todayDate.getUTCFullYear() + 1
+  return `${year}-${String(monthIndex + 1).padStart(2, '0')}-01`
 }
 
 // #determ
@@ -969,13 +1041,17 @@ async function runThinker(jobId, question, emotion, recalledMemories, interpreta
       ? '\nA spreadsheet is being prepared on screen. Do not refuse, do not read its rows aloud, and do not claim it is ready because the artifact status is reported separately. Briefly say it is being prepared.'
       : ''
     const programmingNote = interpretation.intent === 'programming'
-      ? '\nThis is a programming response. Preserve fenced code blocks, language tags, indentation, blank lines, and line wrapping exactly through delivery. Do not convert code to prose or a one-line paragraph.'
+      ? `\nThis is a programming response. Preserve fenced code blocks, language tags, indentation, blank lines, and line wrapping exactly through delivery. Do not convert code to prose or a one-line paragraph.${isPlanningRequest(question)
+        ? ' This is an architecture planning request: provide an actual hierarchy and implementation plan, address the current request directly, and do not praise or evaluate a previous answer.'
+        : ''}`
       : ''
     const programmingAgent = interpretation.intent === 'programming'
       ? [{
           agent_name: 'ProgrammingAssistant',
           system_prompt:
-            'Act as the programming specialist. Solve the exact programming request with correct, directly usable code. Use fenced code blocks with a language tag, explain key decisions briefly, identify filenames when relevant, and never replace code with vague advice. Preserve existing project behavior when modifying code.',
+          `Act as the programming specialist. Solve the exact programming request with correct, directly usable code or, for architecture requests, a concrete hierarchy and implementation plan. Use fenced code blocks with a language tag when code is appropriate, explain key decisions briefly, identify filenames when relevant, and never replace the requested answer with vague advice. Preserve existing project behavior when modifying code.${isPlanningRequest(question)
+            ? ' For this request, return the actual plan rather than reacting to or praising prior context.'
+            : ''}`,
           model_name: configuredModel('PROGRAMMER_MODEL', fallbackModels.programmer),
         }]
       : []
@@ -994,7 +1070,7 @@ Relevant memories: ${recalledMemories.join('; ') || 'none'}${documentNote}${spre
           {
             agent_name: 'Thinker',
             system_prompt:
-              'Answer the exact user message, not a generic conversation starter. Follow the routing instruction. If the route is clarify, ask one concise question for the missing subject or document; do not invent context. Do the hard reasoning, planning, and research needed for that message. If it is only a greeting, greet the user briefly; otherwise address the requested subject directly. Return useful findings for a final speaker.',
+              'Answer the exact current user message, not a generic conversation starter. The current message has priority over previous conversation context; use prior context only to resolve explicit references such as "it" or "that". Never respond to a new request by evaluating or praising a previous answer. Follow the routing instruction. If the route is clarify, ask one concise question for the missing subject or document; do not invent context. Do the hard reasoning, planning, and research needed for that message. If it is only a greeting, greet the user briefly; otherwise address the requested subject directly. Return useful findings for a final speaker.',
             model_name: configuredModel('THINKER_MODEL', fallbackModels.thinker),
           },
           ...programmingAgent,
@@ -2424,13 +2500,16 @@ async function runNoteManager(jobId, question) {
       notes = [...notes].sort((left, right) => right.createdAt.localeCompare(left.createdAt)).slice(0, 100)
       summary = notes.length ? `You have ${notes.length} saved note${notes.length === 1 ? '' : 's'}.` : 'You do not have any saved notes yet.'
     } else if (isNoteDeleteRequest(question)) {
-      const target = question.replace(/^(?:please\s+)?(?:remove|delete|forget|erase)\s+(?:(?:the|my)\s+)?(?:note\s+)?(?:about\s+)?/i, '').trim()
-      const matches = notes.filter((saved) => !target || saved.text.toLowerCase().includes(target.toLowerCase()))
+      const normalizedTarget = normalizeNoteText(extractNoteDeleteTarget(question))
+      const matches = notes.filter((saved) => !normalizedTarget
+        || normalizeNoteText(saved.text).includes(normalizedTarget)
+        || normalizedTarget.includes(normalizeNoteText(saved.text)))
       if (matches.length === 1) {
-        note = await deleteNote(matches[0].id)
-        notes = await listNotes()
+        const deletion = await deleteNote(matches[0].id)
+        note = deletion.deleted
+        notes = deletion.notes
         action = 'delete'
-        summary = 'Removed that note.'
+        summary = note ? 'Removed that note.' : 'I could not find a matching note.'
       } else {
         action = 'clarify'
         summary = matches.length > 1 ? 'I found more than one matching note. Please be more specific.' : 'I could not find a matching note.'
@@ -2511,13 +2590,18 @@ async function runCalendarLister(jobId, question, requestedTimeZone) {
       month: '2-digit',
       day: '2-digit',
     }).format(new Date())
+    const fromDate = calendarOverviewStartDate(question, today)
     const endDate = calendarOverviewEndDate(question, today)
     const events = (await listCalendarEvents())
-      .filter((event) => event.startDate >= today && (!endDate || event.startDate <= endDate))
+      .filter((event) => event.startDate >= fromDate && (!endDate || event.startDate <= endDate))
       .sort((left, right) => `${left.startDate}T${left.startTime || '00:00'}`
         .localeCompare(`${right.startDate}T${right.startTime || '00:00'}`))
       .slice(0, 50)
-    const period = endDate ? (/\b(?:next|coming|upcoming)\s+week\b/i.test(question) ? ' in the next week' : ' in that time period') : ''
+    const period = endDate
+      ? (/\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\b/i.test(question)
+        ? ` in ${question.match(/\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\b/i)[0]}`
+        : /\b(?:next|coming|upcoming)\s+week\b/i.test(question) ? ' in the next week' : ' in that time period')
+      : ''
     const summary = events.length
       ? `Here is your calendar. You have ${events.length} event${events.length === 1 ? '' : 's'}${period}.`
       : endDate
@@ -2528,7 +2612,7 @@ async function runCalendarLister(jobId, question, requestedTimeZone) {
     updateJob(jobId, {
       status: 'complete',
       output: summary,
-      calendar: { action: 'list', summary, events, timeZone, ...(endDate ? { fromDate: today, toDate: endDate } : {}) },
+      calendar: { action: 'list', summary, events, timeZone, ...(endDate ? { fromDate, toDate: endDate } : {}) },
     })
   } catch (error) {
     console.error('Calendar listing failed:', error)
@@ -3182,8 +3266,8 @@ const server = createServer(async (request, response) => {
   }
   if (request.method === 'DELETE' && request.url.startsWith('/api/notes/')) {
     const noteId = request.url.slice('/api/notes/'.length)
-    const deleted = await deleteNote(noteId)
-    sendJson(response, deleted ? 200 : 404, deleted ? { note: deleted } : { error: 'Note not found.' })
+    const deletion = await deleteNote(noteId)
+    sendJson(response, deletion.deleted ? 200 : 404, deletion.deleted ? { note: deletion.deleted, notes: deletion.notes } : { error: 'Note not found.' })
     return
   }
 

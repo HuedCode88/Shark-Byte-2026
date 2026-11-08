@@ -11,5 +11,18 @@
     "location": "",
     "notes": "",
     "createdAt": "2026-11-08T06:26:12.345Z"
+  },
+  {
+    "id": "aafa2c70-82e0-4c55-8483-27cf23b648d3",
+    "title": "Nick's birthday",
+    "startDate": "2027-02-20",
+    "startTime": "",
+    "endDate": "2027-02-20",
+    "endTime": "",
+    "allDay": true,
+    "timeZone": "UTC",
+    "location": "",
+    "notes": "",
+    "createdAt": "2026-11-08T13:58:51.425Z"
   }
 ]

@@ -22,7 +22,11 @@ export default function Jarvis() {
             body: JSON.stringify({ question: text }),
           });
           const result = await response.json();
-          if (!response.ok) throw new Error(result.error || "The assistant request failed.");
+          if (!response.ok) {
+            throw new Error(response.status === 400
+              ? "Can you repeat that please?"
+              : result.error || "The assistant request failed.");
+          }
           setAnswer(result.output);
           speak(result.output);
         } catch (requestError) {

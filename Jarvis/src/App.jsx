@@ -429,7 +429,13 @@ export default function App() {
     error: recognitionError,
   } = useSpeechRecognition({
     levelRef,
-    onError: () => {
+    onError: (message) => {
+      const recoverable = message === 'Can you repeat that please?'
+      if (recoverable) {
+        setError(message)
+        if (conversationActiveRef.current) resumeConversation()
+        return
+      }
       conversationActiveRef.current = false
       setConversationActive(false)
     },
