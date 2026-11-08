@@ -151,7 +151,6 @@ function wantsWebResearch(question) {
 }
 
 function wantsSpreadsheetResearch(question) {
-  if (wantsWebResearch(question)) return true
   const hasHistoricalRange = /\b(?:19|20)\d{2}\s*(?:[-\u2013\u2014]|to|through)\s*(?:19|20)\d{2}\b/i.test(question)
   const hasDataSubject = /\b(sales|prices?|revenue|income|costs?|market|statistics|data|trends?|rates?|production|exports?|imports?)\b/i.test(question)
   const hasRelationalDataRequest = isRelationalAnalysisRequest(question)
@@ -1140,6 +1139,20 @@ async function gatherPages(topic, dataFocused = false, retryHint = '') {
         continue
       }
       if (!candidates.has(hit.url)) candidates.set(hit.url, hit.title || '')
+    }
+  }
+  if (!candidates.size && queries.length > 1) {
+    const fallbackSearch = await Promise.allSettled([
+      firecrawl('/search', { query: topic, limit: 5, sources: [{ type: 'web' }] }),
+    ])
+    const search = fallbackSearch[0]
+    if (search.status === 'fulfilled') {
+      for (const hit of search.value?.data?.web || []) {
+        if (!hit.url || isExcludedResearchUrl(hit.url)) continue
+        if (!candidates.has(hit.url)) candidates.set(hit.url, hit.title || '')
+      }
+    } else {
+      console.error('Fallback research search failed:', search.reason)
     }
   }
 
