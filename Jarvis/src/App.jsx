@@ -724,7 +724,6 @@ export default function App() {
   return (
     <main className="app-shell">
       <header className="app-header">
-        <div className="brand-mark" aria-hidden="true">S</div>
         <div>
           <p className="eyebrow">VOICE ASSISTANT</p>
           <h1>Jarvis</h1>

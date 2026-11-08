@@ -386,21 +386,20 @@ function TextTester() {
   }
 
   return (
-    <main className="text-tester-shell">
+    <main className="app-shell text-tester-shell">
       <header className="app-header">
-        <div className="brand-mark" aria-hidden="true">T</div>
         <div>
-          <p className="eyebrow">TEXT-ONLY TESTER</p>
-          <h1>Jarvis text laboratory</h1>
+          <p className="eyebrow">TEXT INTERFACE</p>
+          <h1>Jarvis</h1>
         </div>
-        <span className="status"><span /> No voice services</span>
+        <span className="status"><span /> Text only</span>
       </header>
 
       <section className="chat-card" aria-label="Text-only Jarvis tester">
         <div className="chat-intro">
-          <p className="eyebrow">SEPARATE TEST ENDPOINT</p>
-          <h2>Test the swarm without ElevenLabs.</h2>
-          <p>This tester uses text input and text output only. It does not call speech-to-text or text-to-speech.</p>
+          <p className="eyebrow">YOUR ASSISTANT</p>
+          <h2>What can I help with?</h2>
+          <p>Use text to chat with Jarvis. Responses, research, and documents will appear here.</p>
         </div>
         <div className="messages" aria-live="polite">
           {messages.length === 0 && (
@@ -412,11 +411,19 @@ function TextTester() {
           {messages.map((message, index) => (
             <div className={`message-row ${message.role}`} key={`${message.role}-${index}`}>
               <span className="message-label">{message.role === 'user' ? 'You' : 'Jarvis'}</span>
-              {!message.news && <div className="assistant-content"><MessageContent text={message.text} /></div>}
-              {message.dossier && <ResearchReport dossier={message.dossier} />}
-              {message.jobSearch && <JobSearchResults result={message.jobSearch} />}
-              {message.noteResult && <NoteResult result={message.noteResult} />}
-              {message.news && <NewsResult result={message.news} />}
+              {message.jobSearch
+                ? <JobSearchResults result={message.jobSearch} />
+                : message.noteResult
+                  ? <NoteResult result={message.noteResult} />
+                  : message.news
+                    ? <NewsResult result={message.news} />
+                    : message.dossier
+                      ? <ResearchReport dossier={message.dossier} />
+                      : (
+                        <p className={message.role === 'assistant' ? 'assistant-content' : undefined}>
+                          <MessageContent text={message.text} />
+                        </p>
+                      )}
               {message.document && <DocumentAttachment document={message.document} />}
               {message.spreadsheet && <SpreadsheetAttachment spreadsheet={message.spreadsheet} />}
               {message.calendar && <CalendarAttachment calendar={message.calendar} />}
@@ -438,7 +445,7 @@ function TextTester() {
           </div>
         </form>
       </section>
-      <footer>Text-only tester · ElevenLabs is not used</footer>
+      <footer>Text-only mode · Same Jarvis workflows · Voice services off</footer>
     </main>
   )
 }
