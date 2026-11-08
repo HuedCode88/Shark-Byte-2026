@@ -297,11 +297,77 @@ function JobSearchResults({ result }) {
   )
 }
 
+function CalendarEvents({ calendar, onDelete, deletingEventId }) {
+  const events = Array.isArray(calendar.events) ? calendar.events : []
+
+  return (
+    <section className="calendar-results" aria-label="Calendar events">
+      <header className="calendar-results-header">
+        <span className="research-label">CALENDAR</span>
+        <h3>{calendar.summary}</h3>
+      </header>
+      {calendar.event && !events.some((event) => event.id === calendar.event.id) && (
+        <article className="calendar-event">
+          <CalendarEventDetails event={calendar.event} onDelete={onDelete} deletingEventId={deletingEventId} />
+        </article>
+      )}
+      {events.length > 0 ? (
+        <div className="calendar-event-list">
+          {events.map((event) => (
+            <article className="calendar-event" key={event.id}>
+              <CalendarEventDetails event={event} onDelete={onDelete} deletingEventId={deletingEventId} />
+            </article>
+          ))}
+        </div>
+      ) : calendar.action === 'list' ? (
+        <p className="calendar-empty-state">Your saved events will appear here.</p>
+      ) : null}
+    </section>
+  )
+}
+
+function CalendarEventDetails({ event, onDelete, deletingEventId }) {
+  const [year, month, day] = event.startDate.split('-').map(Number)
+  const date = new Date(Date.UTC(year, month - 1, day))
+  const dateLabel = new Intl.DateTimeFormat(undefined, {
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
+    timeZone: 'UTC',
+  }).format(date)
+  const timeLabel = event.allDay
+    ? 'All day'
+    : `${event.startTime}${event.endTime ? `–${event.endTime}` : ''}${event.timeZone ? ` · ${event.timeZone}` : ''}`
+
+  return (
+    <>
+      <div className="calendar-event-copy">
+        <h4>{event.title}</h4>
+        <p className="calendar-event-when">{dateLabel} · {timeLabel}</p>
+        {event.location && <p className="calendar-event-detail">{event.location}</p>}
+        {event.notes && <p className="calendar-event-detail">{event.notes}</p>}
+      </div>
+      {onDelete && (
+        <button
+          className="calendar-remove-button"
+          type="button"
+          onClick={() => onDelete(event.id)}
+          disabled={deletingEventId === event.id}
+        >
+          {deletingEventId === event.id ? 'Removing…' : 'Remove'}
+        </button>
+      )}
+    </>
+  )
+}
+
 export default function App() {
   const [messages, setMessages] = useState([])
   const [isLoading, setIsLoading] = useState(false)
   const [loadingText, setLoadingText] = useState('Thinking')
   const [error, setError] = useState('')
+  const [deletingEventId, setDeletingEventId] = useState('')
   const [conversationActive, setConversationActive] = useState(false)
   const conversationActiveRef = useRef(false)
   const resumeTimeoutRef = useRef(null)
@@ -451,6 +517,32 @@ export default function App() {
     }
   }
 
+  async function removeCalendarEvent(eventId) {
+    setDeletingEventId(eventId)
+    setError('')
+    try {
+      const response = await fetch(`/api/calendar/${encodeURIComponent(eventId)}`, { method: 'DELETE' })
+      const result = await response.json()
+      if (!response.ok) throw new Error(result.error || 'The calendar event could not be removed.')
+      setMessages((current) => current.map((message) => message.calendar
+        ? {
+            ...message,
+            text: `Removed ${result.event.title} from your calendar.`,
+            calendar: {
+              ...message.calendar,
+              action: 'list',
+              summary: `Removed ${result.event.title} from your calendar.`,
+              events: result.events,
+            },
+          }
+        : message))
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'The calendar event could not be removed.')
+    } finally {
+      setDeletingEventId('')
+    }
+  }
+
   async function sendQuestion(prompt) {
     const trimmedQuestion = prompt.trim()
 
@@ -464,7 +556,10 @@ export default function App() {
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question: trimmedQuestion }),
+        body: JSON.stringify({
+          question: trimmedQuestion,
+          timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        }),
       })
       const responseText = await response.text()
       let data
@@ -499,10 +594,12 @@ export default function App() {
       let responseAdded = false
       const researching = mode === 'research' || mode === 'research_document' || mode === 'research_spreadsheet'
       const jobSearching = mode === 'job_search'
+      const managingCalendar = mode === 'calendar'
       const maxAttempts = researching || jobSearching ? 480 : 120
       const pollInterval = researching || jobSearching ? 500 : 150
       if (researching) setLoadingText('Searching the web')
       if (jobSearching) setLoadingText('Searching current job listings')
+      if (managingCalendar) setLoadingText('Updating your calendar')
 
       for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
         await new Promise((resolve) => setTimeout(resolve, pollInterval))
@@ -512,6 +609,18 @@ export default function App() {
         if (!response.ok) throw new Error(job.error || 'The chat job could not be found.')
 
         if (job.status === 'complete') {
+          if (job.calendar) {
+            setMessages((current) => [...current, {
+              role: 'assistant',
+              text: job.calendar.summary,
+              calendar: job.calendar,
+              jobId,
+            }])
+            responseAdded = true
+            if (job.calendar.summary) await speak(job.calendar.summary)
+            return
+          }
+
           if (job.jobSearch) {
             if (!responseAdded) {
               setMessages((current) => [...current, {
@@ -594,6 +703,7 @@ export default function App() {
 
         if (job.status === 'researching') setLoadingText('Searching and reading sources')
         if (job.status === 'searching_jobs') setLoadingText('Searching current job listings')
+        if (job.status === 'managing_calendar') setLoadingText('Updating your calendar')
         if (job.status === 'failed') throw new Error(job.error)
       }
 
@@ -638,13 +748,15 @@ export default function App() {
           )}
           {messages.map((message, index) => (
             <div
-              className={`message-row ${message.role}${message.research ? ' research-message' : ''}`}
+              className={`message-row ${message.role}${message.research ? ' research-message' : ''}${message.calendar ? ' calendar-message' : ''}`}
               key={`${message.role}-${index}`}
             >
               <span className="message-label">
-                {message.jobSearch ? 'Jobs' : message.research ? 'Research' : 'Jarvis'}
+                {message.calendar ? 'Calendar' : message.jobSearch ? 'Jobs' : message.research ? 'Research' : 'Jarvis'}
               </span>
-              {message.jobSearch
+              {message.calendar
+                ? <CalendarEvents calendar={message.calendar} onDelete={removeCalendarEvent} deletingEventId={deletingEventId} />
+                : message.jobSearch
                 ? <JobSearchResults result={message.jobSearch} />
                 : message.research
                 ? (
@@ -669,7 +781,7 @@ export default function App() {
                     {message.spreadsheet && <SpreadsheetAttachment spreadsheet={message.spreadsheet} />}
                   </>
                 )}
-              {!message.research && message.document && <DocumentAttachment document={message.document} />}
+              {!message.research && !message.calendar && message.document && <DocumentAttachment document={message.document} />}
             </div>
           ))}
           {isLoading && (

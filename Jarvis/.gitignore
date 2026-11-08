@@ -12,6 +12,7 @@ node_modules
 dist
 dist-ssr
 *.local
+data/calendar.json
 .env
 .env.*
 !.env.example

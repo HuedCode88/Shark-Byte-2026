@@ -117,6 +117,19 @@ h2 { margin: 10px 0 8px; font: 500 clamp(30px, 5vw, 46px)/1.05 Georgia, serif; l
 .job-apply-link { display: inline-flex; gap: 6px; align-items: center; margin-top: 10px; color: var(--ink); font-size: 12px; font-weight: 700; text-decoration-color: var(--dark-mint); text-underline-offset: 3px; }
 .job-empty-state, .job-searched-at { margin: 12px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .job-searched-at { font-size: 11px; }
+.message-row.calendar-message { max-width: 100%; }
+.calendar-results { padding: 18px; border: 1px solid var(--line); border-radius: 14px; background: #edf3ee; text-align: left; }
+.calendar-results-header { margin-bottom: 14px; }
+.calendar-results-header h3 { margin: 5px 0 0; color: var(--ink); font: 500 21px/1.25 Georgia, serif; }
+.calendar-event-list { display: grid; gap: 9px; }
+.calendar-event { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 13px; border: 1px solid var(--line); border-radius: 8px; background: var(--cream); }
+.calendar-event-copy { min-width: 0; }
+.calendar-event h4 { margin: 0; color: var(--ink); font-size: 14px; line-height: 1.4; }
+.calendar-event-when, .calendar-event-detail { margin: 5px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.calendar-event-detail { color: var(--ink); }
+.calendar-remove-button { flex: 0 0 auto; min-height: 34px; padding: 0 10px; border: 1px solid var(--line); background: transparent; color: var(--muted); font-size: 12px; }
+.calendar-remove-button:hover:not(:disabled) { border-color: #a53d42; background: #fff3f1; color: #a53d42; }
+.calendar-empty-state { margin: 0; color: var(--muted); font-size: 13px; }
 .research-header { margin-bottom: 14px; }
 .research-label { color: var(--dark-mint); font: 700 10px/1.2 ui-monospace, monospace; letter-spacing: .1em; }
 .research-header h3 { margin: 5px 0 0; color: var(--ink); font: 500 22px/1.2 Georgia, serif; }
@@ -183,6 +196,8 @@ footer strong { color: var(--ink); }
   .status { display: none; }
   .message-row { max-width: 92%; }
   .message-row.research-message { max-width: 100%; }
+  .calendar-event { flex-direction: column; }
+  .calendar-remove-button { align-self: flex-end; }
   .error-message { margin: 0 20px 16px; }
   .voice-console { padding-bottom: 22px; }
   .voice-actions button { min-height: 48px; }
